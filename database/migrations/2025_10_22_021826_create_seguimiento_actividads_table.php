@@ -78,7 +78,7 @@ return new class extends Migration
 
             // Auditoría
             $table->foreignId('registrado_por')->constrained('users');
-            $table->timestamp('fecha_registro');
+            $table->timestamp('fecha_registro')->useCurrent();
 
             $table->timestamps();
 
