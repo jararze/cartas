@@ -14,12 +14,7 @@ class Actividad extends Model
 
     protected $table = 'actividades';
 
-    protected $fillable = [
-        'producto_id', 'nombre', 'descripcion', 'monto', 'gasto_acumulado',
-        'fecha_inicio', 'fecha_fin', 'fecha_inicio_real', 'fecha_fin_real',
-        'linea_presupuestaria', 'estado', 'progreso', 'prioridad',
-        'observaciones', 'dificultades', 'proximos_pasos', 'responsable_id'
-    ];
+    protected $guarded = [];
 
     protected $casts = [
         'monto' => 'decimal:2',

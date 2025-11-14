@@ -11,10 +11,7 @@ class Producto extends Model
 {
     use HasFactory;
 
-    protected $fillable = [
-        'carta_id', 'nombre', 'descripcion', 'presupuesto',
-        'fecha_inicio', 'fecha_fin', 'indicadores_kpi', 'orden', 'estado'
-    ];
+    protected $guarded = [];
 
     protected $casts = [
         'presupuesto' => 'decimal:2',

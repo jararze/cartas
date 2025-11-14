@@ -33,16 +33,19 @@ class Carta extends Model
         return $this->belongsTo(User::class, 'creado_por');
     }
 
+    // Relación con Proveedor
     public function proveedor(): BelongsTo
     {
-        return $this->belongsTo(Proveedor::class);
+        return $this->belongsTo(Proveedor::class, 'proveedor_id');
     }
 
+    // Relación con Productos
     public function productos(): HasMany
     {
-        return $this->hasMany(Producto::class)->orderBy('orden');
+        return $this->hasMany(Producto::class);
     }
 
+    // Relación con Colaboradores
     public function colaboradores(): HasMany
     {
         return $this->hasMany(ColaboradorCarta::class);

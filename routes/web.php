@@ -53,5 +53,31 @@ Route::middleware(['auth', 'verified'])->group(function () {
         ->middleware('auth')
         ->name('reportes.descargar');
 
+    Volt::route('productos', 'productos.index')->name('productos.index');
+    Volt::route('productos/{producto}', 'productos.show')->name('productos.show');
+
+    Volt::route('actividades', 'actividades.index')->name('actividades.index');
+    Volt::route('actividades/{actividad}', 'actividades.show')->name('actividades.show');
+
+    Volt::route('proveedores', 'proveedores.index')->name('proveedores.index');
+    Volt::route('proveedores/crear', 'proveedores.create')->name('proveedores.create');
+    Volt::route('proveedores/{proveedor}/editar', 'proveedores.edit')->name('proveedores.edit');
+    Volt::route('proveedores/{proveedor}', 'proveedores.show')->name('proveedores.show');
+
+    Volt::route('usuarios', 'usuarios.index')->name('usuarios.index');
+    Volt::route('usuarios/crear', 'usuarios.create')->name('usuarios.create');
+    Volt::route('usuarios/{user}/editar', 'usuarios.edit')->name('usuarios.edit');
+    Volt::route('usuarios/{user}', 'usuarios.show')->name('usuarios.show');
+
+    // Configuración
+    Volt::route('configuracion', 'configuracion.index')->name('configuracion.index');
+
+    // Roles
+    Volt::route('configuracion/roles', 'configuracion.roles.index')->name('configuracion.roles.index');
+    Volt::route('configuracion/roles/crear', 'configuracion.roles.create')->name('configuracion.roles.create');
+    Volt::route('configuracion/roles/{role}/editar', 'configuracion.roles.edit')->name('configuracion.roles.edit');
+
+    // Permisos
+    Volt::route('configuracion/permisos', 'configuracion.permisos.index')->name('configuracion.permisos.index');
 
 });

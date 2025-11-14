@@ -95,14 +95,14 @@
                 Actividades
             </flux:navlist.item>
 
-            <flux:navlist.item
-                icon="chart-pie"
-                href="/seguimiento"
-                :current="request()->is('seguimiento*')"
-                wire:navigate
-            >
-                Seguimiento
-            </flux:navlist.item>
+{{--            <flux:navlist.item--}}
+{{--                icon="chart-pie"--}}
+{{--                href="/seguimiento"--}}
+{{--                :current="request()->is('seguimiento*')"--}}
+{{--                wire:navigate--}}
+{{--            >--}}
+{{--                Seguimiento--}}
+{{--            </flux:navlist.item>--}}
         </flux:navlist.group>
 
         @can('ver_usuarios')
@@ -137,29 +137,40 @@
                 Reportes
             </flux:navlist.item>
 
+{{--            <flux:navlist.item--}}
+{{--                icon="arrow-down-tray"--}}
+{{--                href="/exportar"--}}
+{{--                :current="request()->is('exportar*')"--}}
+{{--                wire:navigate--}}
+{{--            >--}}
+{{--                Exportar Datos--}}
+{{--            </flux:navlist.item>--}}
+        </flux:navlist.group>
+
+        <flux:navlist.group heading="Proveedores" class="grid">
             <flux:navlist.item
-                icon="arrow-down-tray"
-                href="/exportar"
-                :current="request()->is('exportar*')"
+                icon="document-chart-bar"
+                href="/proveedores"
+                :current="request()->is('proveedores*')"
                 wire:navigate
             >
-                Exportar Datos
+                Proveedores
+            </flux:navlist.item>
+
+            <flux:navlist.item
+                icon="arrow-down-tray"
+                href="proveedores/crear"
+                :current="request()->is('proveedores*')"
+                wire:navigate
+            >
+                Nuevo Proveedor
             </flux:navlist.item>
         </flux:navlist.group>
     </flux:navlist>
 
     <flux:spacer/>
 
-    <!-- Support Links -->
-    <flux:navlist variant="outline">
-        <flux:navlist.item icon="question-mark-circle" href="/ayuda" target="_blank">
-            Ayuda
-        </flux:navlist.item>
 
-        <flux:navlist.item icon="book-open" href="https://laravel.com/docs" target="_blank">
-            Documentación
-        </flux:navlist.item>
-    </flux:navlist>
 
     <!-- Desktop User Menu -->
     <flux:dropdown class="hidden lg:block" position="bottom" align="start">
@@ -257,7 +268,7 @@
                 <flux:menu.item :href="route('profile.edit')" icon="cog" wire:navigate>
                     Configuración
                 </flux:menu.item>
-                <flux:menu.item href="/mi-perfil" icon="user" wire:navigate>
+                <flux:menu.item href="{{ route('profile.edit') }}" icon="user" wire:navigate>
                     Mi Perfil
                 </flux:menu.item>
                 @if(auth()->user()->hasRole(['Administrador', 'Coordinador']))
@@ -295,7 +306,6 @@
     </flux:dropdown>
 </flux:sidebar>
 
-<!-- Mobile User Menu -->
 <!-- Mobile User Menu -->
 <flux:header class="lg:hidden">
     <flux:sidebar.toggle class="lg:hidden" icon="bars-2" inset="left" />
