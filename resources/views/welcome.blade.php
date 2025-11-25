@@ -69,7 +69,7 @@
     <div class="container mx-auto px-4 sm:px-6 lg:px-8">
         <div class="text-center max-w-4xl mx-auto">
             <h1 class="text-4xl sm:text-5xl font-bold text-gray-900 dark:text-white mb-6">
-                Sistema de Gestión FAO
+                Sistema CDA FAOBO
             </h1>
             <p class="text-xl text-gray-600 dark:text-gray-300 mb-8">
                 Plataforma integral para la gestión de cartas documento, productos y seguimiento de actividades

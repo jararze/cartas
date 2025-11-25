@@ -2,8 +2,28 @@
     <!-- Session Status -->
     <x-auth-session-status class="mb-4" :status="session('status')" />
 
+    <!-- Mensaje de invitación si viene desde carta -->
+    @if(request('carta'))
+        <div class="mb-6 bg-blue-50 dark:bg-blue-900/20 border-l-4 border-blue-500 p-4 rounded-r-lg">
+            <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <div>
+                    <p class="text-sm font-semibold text-blue-800 dark:text-blue-300">Has recibido una invitación</p>
+                    <p class="text-sm text-blue-700 dark:text-blue-400 mt-1">Inicia sesión para ver los detalles completos de la carta: <strong>{{ request('carta') }}</strong></p>
+                </div>
+            </div>
+        </div>
+    @endif
+
     <form method="POST" action="{{ route('login.store') }}" class="space-y-6">
         @csrf
+
+        <!-- Hidden redirect field -->
+        @if(request('redirect'))
+            <input type="hidden" name="redirect" value="{{ request('redirect') }}">
+        @endif
 
         <!-- Email con Flux -->
         <flux:input
@@ -12,7 +32,7 @@
             type="email"
             placeholder="tu@email.com"
             icon:leading="at-symbol"
-            value="{{ old('email') }}"
+            value="{{ request('email', old('email')) }}"
             required
             autofocus
             autocomplete="email"
@@ -77,7 +97,7 @@
     @if (Route::has('register'))
         <div class="mt-6 space-x-1 text-sm text-center text-gray-600 dark:text-gray-400">
             <span>¿No tienes cuenta?</span>
-            <flux:link :href="route('register')">Regístrate</flux:link>
+            <flux:link :href="route('register', request()->only(['email', 'carta', 'redirect']))">Regístrate</flux:link>
         </div>
     @endif
 

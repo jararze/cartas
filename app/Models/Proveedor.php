@@ -4,27 +4,23 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Proveedor extends Model
 {
-    protected $fillable = [
-        'nombre',
-        'email',
-        'telefono',
-        'whatsapp',
-        'empresa',
-        'contacto_principal',
-        'cargo',
-        'especialidades',
-        'notas',
-        'activo'
-    ];
+    protected $guarded = [];
 
     protected $casts = [
         'especialidades' => 'array',
         'activo' => 'boolean'
     ];
+
+    // Relación con Usuario
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
 
     public function cartas(): HasMany
     {

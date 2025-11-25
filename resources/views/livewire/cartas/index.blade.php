@@ -51,8 +51,14 @@ new class extends Component {
     public function loadCartas(): void
     {
         $this->loading = true;
+        $user = auth()->user();
 
         $query = Carta::with(['proveedor', 'creador']);
+
+        // SI ES PROVEEDOR, SOLO VER SUS CARTAS
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            $query->where('proveedor_id', $user->proveedor->id);
+        }
 
         // Filtro de búsqueda
         if ($this->search) {
@@ -74,7 +80,7 @@ new class extends Component {
         // Ordenamiento
         $query->orderBy($this->sort_filter, 'desc');
 
-        $perPage = 6; // 6 cards por carga
+        $perPage = 6;
         $newCartas = $query->skip(($this->page - 1) * $perPage)
             ->take($perPage)
             ->get();
@@ -89,6 +95,24 @@ new class extends Component {
 
     public function with(): array
     {
+        $user = auth()->user();
+
+        // SI ES PROVEEDOR, ESTADÍSTICAS SOLO DE SUS CARTAS
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            return [
+                'stats' => [
+                    'total' => Carta::where('proveedor_id', $user->proveedor->id)->count(),
+                    'en_progreso' => Carta::where('proveedor_id', $user->proveedor->id)
+                        ->whereIn('estado', ['en_ejecucion', 'aceptada'])->count(),
+                    'pendientes' => Carta::where('proveedor_id', $user->proveedor->id)
+                        ->where('estado', 'enviada')->count(),
+                    'valor_total' => Carta::where('proveedor_id', $user->proveedor->id)
+                            ->sum('monto_total') ?? 0,
+                ]
+            ];
+        }
+
+        // ADMIN/COORDINADOR VEN TODO
         return [
             'stats' => [
                 'total' => Carta::count(),
@@ -165,7 +189,7 @@ new class extends Component {
 >
     <!-- Header -->
     <div class="flex items-center gap-3 mb-6">
-        <a href="{{ route('cartas.index') }}"
+        <a href="{{ route('dashboard') }}"
            class="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
            wire:navigate>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -173,9 +197,20 @@ new class extends Component {
             </svg>
         </a>
         <div>
-            <h1 class="text-2xl font-bold text-gray-800 dark:text-white">Sistema de Gestión de Cartas Documento FAO</h1>
-            <p class="text-sm text-gray-600 dark:text-gray-400">Gestión integral de cartas, productos y seguimiento de
-                actividades</p>
+            <h1 class="text-2xl font-bold text-gray-800 dark:text-white">
+                @if(auth()->user()->hasRole('Proveedor'))
+                    Mis Cartas Documento
+                @else
+                    Sistema de Gestión de Cartas Documento FAO
+                @endif
+            </h1>
+            <p class="text-sm text-gray-600 dark:text-gray-400">
+                @if(auth()->user()->hasRole('Proveedor'))
+                    Cartas asignadas y seguimiento de actividades
+                @else
+                    Gestión integral de cartas, productos y seguimiento de actividades
+                @endif
+            </p>
         </div>
     </div>
 
@@ -226,13 +261,15 @@ new class extends Component {
                 </select>
             </div>
 
-            <!-- Botón Nueva Carta -->
-            <flux:button variant="primary" href="{{ route('cartas.create') }}" wire:navigate class="whitespace-nowrap">
-                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                </svg>
-                Nueva Carta
-            </flux:button>
+            <!-- Botón Nueva Carta - SOLO ADMIN/COORDINADOR -->
+            @if(auth()->user()->hasRole(['Administrador', 'Coordinador']))
+                <flux:button variant="primary" href="{{ route('cartas.create') }}" wire:navigate class="whitespace-nowrap">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    Nueva Carta
+                </flux:button>
+            @endif
         </div>
 
         <!-- Estadísticas -->

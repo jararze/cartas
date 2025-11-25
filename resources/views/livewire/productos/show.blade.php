@@ -123,7 +123,88 @@ new class extends Component {
                     </svg>
                     Volver
                 </a>
+
+                <!-- Botón Editar (solo para proveedor propietario) -->
+                @can('update', $producto)
+                    <a href="{{ route('productos.edit', $producto) }}"
+                       wire:navigate
+                       class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition ml-5">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                        </svg>
+                        Editar Producto
+                    </a>
+                @endcan
             </div>
+        </div>
+
+        <!-- Alerta de Presupuesto -->
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 mb-5">
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-4">💰 Análisis de Presupuesto</h3>
+
+            <div class="grid md:grid-cols-3 gap-4 mb-4">
+                <!-- Presupuesto Estimado -->
+                <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4">
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Presupuesto Estimado</p>
+                    <p class="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                        ${{ number_format($producto->presupuesto, 2) }}
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        (Sugerido inicialmente)
+                    </p>
+                </div>
+
+                <!-- Presupuesto Real -->
+                <div class="bg-green-50 dark:bg-green-900/20 rounded-lg p-4">
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Presupuesto Real</p>
+                    <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+                        ${{ number_format($producto->presupuesto_real, 2) }}
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        (Suma de actividades)
+                    </p>
+                </div>
+
+                <!-- Diferencia -->
+                <div class="rounded-lg p-4 {{ $producto->excede_presupuesto ? 'bg-red-50 dark:bg-red-900/20' : 'bg-gray-50 dark:bg-gray-700' }}">
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Diferencia</p>
+                    <p class="text-2xl font-bold {{ $producto->excede_presupuesto ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-400' }}">
+                        ${{ number_format($producto->diferencia_presupuesto, 2) }}
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        ({{ $producto->porcentaje_utilizado }}% utilizado)
+                    </p>
+                </div>
+            </div>
+
+            <!-- Barra de progreso -->
+            <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3 mb-2">
+                <div class="{{ $producto->excede_presupuesto ? 'bg-red-600' : 'bg-green-600' }} h-3 rounded-full transition-all duration-500"
+                     style="width: {{ min($producto->porcentaje_utilizado, 100) }}%"></div>
+            </div>
+
+            <!-- Alerta si excede -->
+            @if($producto->excede_presupuesto)
+                <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mt-4">
+                    <div class="flex items-start gap-3">
+                        <svg class="w-6 h-6 text-red-600 dark:text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <div>
+                            <p class="text-sm font-bold text-red-800 dark:text-red-300 mb-1">
+                                ⚠️ Presupuesto Excedido
+                            </p>
+                            <p class="text-sm text-red-700 dark:text-red-400">
+                                El presupuesto real de las actividades (${{ number_format($producto->presupuesto_real, 2) }})
+                                excede el presupuesto estimado en ${{ number_format(abs($producto->diferencia_presupuesto), 2) }}.
+                            </p>
+                            <p class="text-sm text-red-600 dark:text-red-500 mt-2">
+                                Considera ajustar el presupuesto estimado o revisar las actividades.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            @endif
         </div>
 
         <!-- KPIs -->

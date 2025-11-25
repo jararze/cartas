@@ -15,7 +15,7 @@
             </div>
         </div>
 
-        {{-- KPIs Cards Principales --}}
+        {{-- KPIs Cards Principales - MODIFICADO: "Total Cartas" en lugar de "Total Actividades" --}}
         <div class="grid gap-4 md:grid-cols-4">
             {{-- Presupuesto Total --}}
             <div class="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 hover:shadow-lg transition-shadow">
@@ -34,21 +34,21 @@
                 <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-2">{{ $stats['cartas_activas'] }} cartas activas</p>
             </div>
 
-            {{-- Actividades --}}
+            {{-- Total Cartas - MODIFICADO --}}
             <div class="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 p-6 hover:shadow-lg transition-shadow">
                 <div class="flex items-center justify-between mb-3">
                     <div class="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center">
                         <svg class="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                         </svg>
                     </div>
                     <span class="text-xs font-semibold bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-1 rounded-full">
-                        {{ $stats['actividades_en_curso'] }} activas
+                        {{ $stats['cartas_activas'] }} activas
                     </span>
                 </div>
-                <h3 class="text-sm font-medium text-neutral-600 dark:text-neutral-400 mb-1">Total Actividades</h3>
-                <p class="text-2xl font-bold text-neutral-900 dark:text-white">{{ $stats['actividades_total'] }}</p>
-                <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-2">{{ $stats['actividades_completadas'] }} completadas</p>
+                <h3 class="text-sm font-medium text-neutral-600 dark:text-neutral-400 mb-1">Total Cartas</h3>
+                <p class="text-2xl font-bold text-neutral-900 dark:text-white">{{ $stats['cartas_total'] }}</p>
+                <p class="text-xs text-neutral-500 dark:text-neutral-400 mt-2">{{ $stats['cartas_finalizadas'] }} finalizadas</p>
             </div>
 
             {{-- Progreso General --}}
@@ -249,11 +249,11 @@
             </div>
         </div>
 
-        {{-- Actividades Recientes --}}
+        {{-- Cartas Recientes - CON BÚSQUEDA Y PAGINACIÓN --}}
         <div class="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 overflow-hidden">
             <div class="p-6 border-b border-neutral-200 dark:border-neutral-700">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-lg font-bold text-neutral-900 dark:text-white">Actividades Recientes</h3>
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-bold text-neutral-900 dark:text-white">Cartas Recientes</h3>
                     <a href="{{ route('cartas.index') }}" class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-semibold flex items-center gap-1">
                         Ver todas
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -261,14 +261,36 @@
                         </svg>
                     </a>
                 </div>
+
+                {{-- Buscador --}}
+                <form method="GET" action="{{ route('dashboard') }}" class="relative">
+                    <input
+                        type="text"
+                        name="busqueda"
+                        value="{{ $busqueda }}"
+                        placeholder="Buscar por código, proyecto o proveedor..."
+                        class="w-full pl-10 pr-4 py-2 border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                    <svg class="w-5 h-5 absolute left-3 top-2.5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    @if($busqueda)
+                        <a href="{{ route('dashboard') }}" class="absolute right-3 top-2.5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </a>
+                    @endif
+                </form>
             </div>
 
             <div class="overflow-x-auto">
                 <table class="w-full">
                     <thead class="bg-neutral-50 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700">
                     <tr>
-                        <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Actividad</th>
-                        <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Carta</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Código</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Proyecto</th>
+                        <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Proveedor</th>
                         <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Estado</th>
                         <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Progreso</th>
                         <th class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 dark:text-neutral-400 uppercase tracking-wider">Presupuesto</th>
@@ -276,60 +298,64 @@
                     </tr>
                     </thead>
                     <tbody class="divide-y divide-neutral-200 dark:divide-neutral-700">
-                    @forelse($actividadesRecientes as $actividad)
-                        <tr class="hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors">
+                    @forelse($cartasRecientes as $carta)
+                        <tr class="hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors cursor-pointer" onclick="window.location='{{ route('cartas.show', $carta['id']) }}'">
                             <td class="px-6 py-4">
-                                <div class="font-medium text-neutral-900 dark:text-white">{{ $actividad['nombre'] }}</div>
-                                <div class="text-sm text-neutral-500 dark:text-neutral-400">{{ $actividad['producto'] }}</div>
+                                <div class="font-medium text-neutral-900 dark:text-white">{{ $carta['codigo'] }}</div>
                             </td>
                             <td class="px-6 py-4">
-                                <div class="text-sm text-neutral-900 dark:text-white">{{ $actividad['carta_codigo'] }}</div>
+                                <div class="font-medium text-neutral-900 dark:text-white">{{ Str::limit($carta['nombre_proyecto'], 40) }}</div>
+                                <div class="text-sm text-neutral-500 dark:text-neutral-400">{{ $carta['actividades_completadas'] }}/{{ $carta['actividades_total'] }} actividades</div>
                             </td>
                             <td class="px-6 py-4">
-                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                                        @if($actividad['estado'] === 'finalizado') bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400
-                                        @elseif($actividad['estado'] === 'en_curso') bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-400
-                                        @elseif($actividad['estado'] === 'atrasado') bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-400
-                                        @else bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300
-                                        @endif
-                                    ">
-                                        {{ ucfirst(str_replace('_', ' ', $actividad['estado'])) }}
-                                    </span>
+                                <div class="text-sm text-neutral-900 dark:text-white">{{ $carta['proveedor'] }}</div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                                    @if($carta['estado'] === 'finalizada') bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-400
+                                    @elseif($carta['estado'] === 'en_ejecucion') bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-400
+                                    @elseif($carta['estado'] === 'aceptada') bg-teal-100 dark:bg-teal-900/30 text-teal-800 dark:text-teal-400
+                                    @elseif($carta['estado'] === 'borrador') bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300
+                                    @else bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-400
+                                    @endif
+                                ">
+                                    {{ ucfirst(str_replace('_', ' ', $carta['estado'])) }}
+                                </span>
                             </td>
                             <td class="px-6 py-4">
                                 <div class="flex items-center gap-2">
                                     <div class="flex-1 bg-neutral-200 dark:bg-neutral-700 rounded-full h-2 max-w-[80px]">
                                         <div class="
-                                                @if($actividad['progreso'] >= 75) bg-green-600
-                                                @elseif($actividad['progreso'] >= 50) bg-blue-600
-                                                @elseif($actividad['progreso'] >= 25) bg-yellow-600
-                                                @else bg-red-600
-                                                @endif
-                                                h-2 rounded-full transition-all duration-500
-                                            " style="width: {{ $actividad['progreso'] }}%"></div>
+                                            @if($carta['progreso'] >= 75) bg-green-600
+                                            @elseif($carta['progreso'] >= 50) bg-blue-600
+                                            @elseif($carta['progreso'] >= 25) bg-yellow-600
+                                            @else bg-red-600
+                                            @endif
+                                            h-2 rounded-full transition-all duration-500
+                                        " style="width: {{ $carta['progreso'] }}%"></div>
                                     </div>
-                                    <span class="text-sm font-semibold text-neutral-700 dark:text-neutral-300">{{ $actividad['progreso'] }}%</span>
+                                    <span class="text-sm font-semibold text-neutral-700 dark:text-neutral-300">{{ $carta['progreso'] }}%</span>
                                 </div>
                             </td>
                             <td class="px-6 py-4">
-                                <div class="text-sm font-medium text-neutral-900 dark:text-white">${{ number_format($actividad['presupuesto'], 0) }}</div>
-                                <div class="text-xs text-neutral-500 dark:text-neutral-400">Gastado: ${{ number_format($actividad['gasto'], 0) }}</div>
+                                <div class="text-sm font-medium text-neutral-900 dark:text-white">${{ number_format($carta['presupuesto'], 0) }}</div>
+                                <div class="text-xs text-neutral-500 dark:text-neutral-400">Gastado: ${{ number_format($carta['gasto'], 0) }}</div>
                             </td>
                             <td class="px-6 py-4">
-                                <div class="text-sm text-neutral-900 dark:text-white">{{ \Carbon\Carbon::parse($actividad['fecha_fin'])->format('d/m/Y') }}</div>
-                                @if($actividad['dias_restantes'] !== null)
+                                <div class="text-sm text-neutral-900 dark:text-white">{{ \Carbon\Carbon::parse($carta['fecha_fin'])->format('d/m/Y') }}</div>
+                                @if($carta['dias_restantes'] !== null)
                                     <div class="text-xs
-                                            @if($actividad['dias_restantes'] < 0) text-red-600 dark:text-red-400
-                                            @elseif($actividad['dias_restantes'] <= 7) text-yellow-600 dark:text-yellow-400
-                                            @else text-neutral-500 dark:text-neutral-400
-                                            @endif
-                                        ">
-                                        @if($actividad['dias_restantes'] < 0)
-                                            Vencido hace {{ abs($actividad['dias_restantes']) }} días
-                                        @elseif($actividad['dias_restantes'] == 0)
+                                        @if($carta['dias_restantes'] < 0) text-red-600 dark:text-red-400
+                                        @elseif($carta['dias_restantes'] <= 7) text-yellow-600 dark:text-yellow-400
+                                        @else text-neutral-500 dark:text-neutral-400
+                                        @endif
+                                    ">
+                                        @if($carta['dias_restantes'] < 0)
+                                            Vencida hace {{ abs($carta['dias_restantes']) }} días
+                                        @elseif($carta['dias_restantes'] == 0)
                                             Vence hoy
                                         @else
-                                            {{ $actividad['dias_restantes'] }} días restantes
+                                            {{ $carta['dias_restantes'] }} días restantes
                                         @endif
                                     </div>
                                 @endif
@@ -337,17 +363,30 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="6" class="px-6 py-12 text-center">
+                            <td colspan="7" class="px-6 py-12 text-center">
                                 <svg class="w-16 h-16 mx-auto text-neutral-300 dark:text-neutral-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                 </svg>
-                                <p class="text-neutral-500 dark:text-neutral-400">No hay actividades recientes</p>
+                                <p class="text-neutral-500 dark:text-neutral-400">
+                                    @if($busqueda)
+                                        No se encontraron cartas con "{{ $busqueda }}"
+                                    @else
+                                        No hay cartas recientes
+                                    @endif
+                                </p>
                             </td>
                         </tr>
                     @endforelse
                     </tbody>
                 </table>
             </div>
+
+            {{-- Paginación --}}
+            @if($cartasRecientes->hasPages())
+                <div class="px-6 py-4 border-t border-neutral-200 dark:border-neutral-700">
+                    {{ $cartasRecientes->appends(['busqueda' => $busqueda])->links() }}
+                </div>
+            @endif
         </div>
 
     </div>

@@ -5,6 +5,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Kpi;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -270,5 +271,10 @@ class Carta extends Model
             ->where('estado', 'aceptado')
             ->take(3)
             ->get();
+    }
+
+    public function kpis(): HasMany
+    {
+        return $this->hasMany(Kpi::class);
     }
 }

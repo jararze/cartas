@@ -67,43 +67,36 @@
             </flux:navlist.item>
         </flux:navlist.group>
 
-        <flux:navlist.group heading="Gestión de Cartas" class="grid">
-            <flux:navlist.item
-                icon="document-text"
-                href="/cartas"
-                :current="request()->is('cartas*')"
-                wire:navigate
-            >
-                Cartas Documento
-            </flux:navlist.item>
+        @if(auth()->user()->hasRole(['Administrador', 'Coordinador','Proveedor']))
+            <flux:navlist.group heading="Gestión de Cartas" class="grid">
+                <flux:navlist.item
+                    icon="document-text"
+                    href="/cartas"
+                    :current="request()->is('cartas*')"
+                    wire:navigate
+                >
+                    Cartas Documento
+                </flux:navlist.item>
 
-            <flux:navlist.item
-                icon="cube"
-                href="/productos"
-                :current="request()->is('productos*')"
-                wire:navigate
-            >
-                Productos
-            </flux:navlist.item>
+                <flux:navlist.item
+                    icon="cube"
+                    href="/productos"
+                    :current="request()->is('productos*')"
+                    wire:navigate
+                >
+                    Productos
+                </flux:navlist.item>
 
-            <flux:navlist.item
-                icon="clipboard-document-check"
-                href="/actividades"
-                :current="request()->is('actividades*')"
-                wire:navigate
-            >
-                Actividades
-            </flux:navlist.item>
-
-{{--            <flux:navlist.item--}}
-{{--                icon="chart-pie"--}}
-{{--                href="/seguimiento"--}}
-{{--                :current="request()->is('seguimiento*')"--}}
-{{--                wire:navigate--}}
-{{--            >--}}
-{{--                Seguimiento--}}
-{{--            </flux:navlist.item>--}}
-        </flux:navlist.group>
+                <flux:navlist.item
+                    icon="clipboard-document-check"
+                    href="/actividades"
+                    :current="request()->is('actividades*')"
+                    wire:navigate
+                >
+                    Actividades
+                </flux:navlist.item>
+            </flux:navlist.group>
+        @endif
 
         @can('ver_usuarios')
             <flux:navlist.group heading="Administración" class="grid">
@@ -127,49 +120,79 @@
             </flux:navlist.group>
         @endcan
 
-        <flux:navlist.group heading="Reportes" class="grid">
-            <flux:navlist.item
-                icon="document-chart-bar"
-                href="/reportes"
-                :current="request()->is('reportes*')"
-                wire:navigate
-            >
-                Reportes
-            </flux:navlist.item>
+        @if(auth()->user()->hasRole(['Administrador', 'Coordinador', 'Proveedor']))
+            <flux:navlist.group heading="Reportes" class="grid">
+                <flux:navlist.item
+                    icon="document-chart-bar"
+                    href="/reportes"
+                    :current="request()->is('reportes*')"
+                    wire:navigate
+                >
+                    Reportes
+                </flux:navlist.item>
 
-{{--            <flux:navlist.item--}}
-{{--                icon="arrow-down-tray"--}}
-{{--                href="/exportar"--}}
-{{--                :current="request()->is('exportar*')"--}}
-{{--                wire:navigate--}}
-{{--            >--}}
-{{--                Exportar Datos--}}
-{{--            </flux:navlist.item>--}}
-        </flux:navlist.group>
+                {{-- NUEVO: Adjuntos --}}
+                <flux:navlist.item
+                    icon="paper-clip"
+                    href="/adjuntos"
+                    :current="request()->is('adjuntos*')"
+                    wire:navigate
+                >
+                    Archivos Adjuntos
+                </flux:navlist.item>
 
-        <flux:navlist.group heading="Proveedores" class="grid">
-            <flux:navlist.item
-                icon="document-chart-bar"
-                href="/proveedores"
-                :current="request()->is('proveedores*')"
-                wire:navigate
-            >
-                Proveedores
-            </flux:navlist.item>
+            </flux:navlist.group>
+        @endif
+        @if(auth()->user()->hasRole(['Administrador', 'Coordinador']))
+            <flux:navlist.group heading="Proveedores" class="grid">
+                <flux:navlist.item
+                    icon="building-office"
+                    href="/proveedores"
+                    :current="request()->is('proveedores*')"
+                    wire:navigate
+                >
+                    Proveedores
+                </flux:navlist.item>
 
-            <flux:navlist.item
-                icon="arrow-down-tray"
-                href="proveedores/crear"
-                :current="request()->is('proveedores*')"
-                wire:navigate
-            >
-                Nuevo Proveedor
-            </flux:navlist.item>
-        </flux:navlist.group>
+                <flux:navlist.item
+                    icon="plus-circle"
+                    href="/proveedores/crear"
+                    :current="request()->is('proveedores/crear')"
+                    wire:navigate
+                >
+                    Nuevo Proveedor
+                </flux:navlist.item>
+            </flux:navlist.group>
+        @endif
+
+        {{-- MENÚ EXCLUSIVO PARA PROVEEDORES --}}
+        @if(auth()->user()->hasRole('Proveedor'))
+            <flux:navlist.group heading="Mis Invitaciones" class="grid">
+                <flux:navlist.item
+                    icon="envelope"
+                    href="/invitaciones"
+                    :current="request()->is('invitaciones*')"
+                    wire:navigate
+                >
+                    Invitaciones Recibidas
+                    @if(auth()->user()->proveedor)
+                        @php
+                            $pendientes = \App\Models\Carta::where('proveedor_id', auth()->user()->proveedor->id)
+                                ->whereIn('estado', ['enviada', 'vista'])
+                                ->count();
+                        @endphp
+                        @if($pendientes > 0)
+                            <span class="ml-auto bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
+                        {{ $pendientes }}
+                    </span>
+                        @endif
+                    @endif
+                </flux:navlist.item>
+            </flux:navlist.group>
+        @endif
     </flux:navlist>
 
     <flux:spacer/>
-
 
 
     <!-- Desktop User Menu -->
@@ -308,9 +331,9 @@
 
 <!-- Mobile User Menu -->
 <flux:header class="lg:hidden">
-    <flux:sidebar.toggle class="lg:hidden" icon="bars-2" inset="left" />
+    <flux:sidebar.toggle class="lg:hidden" icon="bars-2" inset="left"/>
 
-    <flux:spacer />
+    <flux:spacer/>
 
     <flux:dropdown position="top" align="end">
         <flux:profile
@@ -323,35 +346,43 @@
                 <div class="p-0 text-sm font-normal">
                     <div class="flex items-center gap-3 px-3 py-3 text-start text-sm">
                         <span class="relative flex h-10 w-10 shrink-0 overflow-hidden rounded-lg">
-                            <span class="flex h-full w-full items-center justify-center rounded-lg bg-blue-600 dark:bg-blue-500 text-white font-bold">
+                            <span
+                                class="flex h-full w-full items-center justify-center rounded-lg bg-blue-600 dark:bg-blue-500 text-white font-bold">
                                 {{ auth()->user()->initials() }}
                             </span>
                         </span>
 
                         <div class="grid flex-1 text-start leading-tight">
-                            <span class="truncate font-semibold text-gray-900 dark:text-white">{{ auth()->user()->name }}</span>
-                            <span class="truncate text-xs text-gray-500 dark:text-gray-400">{{ auth()->user()->email }}</span>
+                            <span
+                                class="truncate font-semibold text-gray-900 dark:text-white">{{ auth()->user()->name }}</span>
+                            <span
+                                class="truncate text-xs text-gray-500 dark:text-gray-400">{{ auth()->user()->email }}</span>
 
                             <!-- Rol badge - versión móvil -->
                             <div class="mt-1">
                                 @if(auth()->user()->hasRole('Administrador'))
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">
+                                    <span
+                                        class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">
                                         Admin
                                     </span>
                                 @elseif(auth()->user()->hasRole('Coordinador'))
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
+                                    <span
+                                        class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
                                         Coordinador
                                     </span>
                                 @elseif(auth()->user()->hasRole('Técnico'))
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                                    <span
+                                        class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
                                         Técnico
                                     </span>
                                 @elseif(auth()->user()->hasRole('Proveedor'))
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                                    <span
+                                        class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
                                         Proveedor
                                     </span>
                                 @else
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-400">
+                                    <span
+                                        class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-400">
                                         Usuario
                                     </span>
                                 @endif
@@ -361,17 +392,18 @@
                 </div>
             </flux:menu.radio.group>
 
-            <flux:menu.separator />
+            <flux:menu.separator/>
 
             <flux:menu.radio.group>
                 <flux:menu.item :href="route('profile.edit')" icon="cog" wire:navigate>Configuración</flux:menu.item>
             </flux:menu.radio.group>
 
-            <flux:menu.separator />
+            <flux:menu.separator/>
 
             <form method="POST" action="{{ route('logout') }}" class="w-full">
                 @csrf
-                <flux:menu.item as="button" type="submit" icon="arrow-right-start-on-rectangle" class="w-full text-red-600" data-test="logout-button">
+                <flux:menu.item as="button" type="submit" icon="arrow-right-start-on-rectangle"
+                                class="w-full text-red-600" data-test="logout-button">
                     Cerrar Sesión
                 </flux:menu.item>
             </form>

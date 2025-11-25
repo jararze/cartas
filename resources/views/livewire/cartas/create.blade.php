@@ -5,10 +5,14 @@ use App\Models\Proveedor;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Volt\Component;
+use Livewire\WithFileUploads;
 use App\Services\InvitationDocumentGenerator;
 
 new class extends Component {
+    use WithFileUploads;
+
     public $project_name = '';
     public $service_description = '';
     public $background = '';
@@ -38,21 +42,38 @@ new class extends Component {
     public $showWhatsAppModal = false;
     public $selected_provider_id = null;
 
+    // Archivos adjuntos
+    public $archivos_adjuntos = [];
+    public $archivos_guardados = [];
+
     public function rules()
     {
         return [
             'project_name' => 'required|min:5|max:255',
             'service_description' => 'required|min:20',
             'background' => 'required|min:10',
-            'required_services' => 'required|array|min:1', // Cambiar esta línea
-            'required_services.*' => 'string|max:255', // Agregar validación para elementos
-            'required_products' => 'array', // Hacer opcional los productos
-            'required_products.*' => 'string|max:255', // Validar elementos si existen
+            'required_services' => 'required|array|min:1',
+            'required_services.*' => 'string|max:255',
+            'required_products' => 'array',
+            'required_products.*' => 'string|max:255',
             'start_date' => 'required|date|after_or_equal:today',
             'end_date' => 'required|date|after:start_date',
             'selected_provider_id' => 'required|exists:proveedors,id',
             'send_type' => 'required|in:email,whatsapp,ambos',
+            'archivos_adjuntos.*' => 'nullable|file|max:10240', // max 10MB por archivo
         ];
+    }
+
+    public function updatedArchivosAdjuntos()
+    {
+        $this->validate([
+            'archivos_adjuntos.*' => 'file|max:10240|mimes:pdf,doc,docx,xls,xlsx,jpg,jpeg,png',
+        ]);
+    }
+
+    public function removeArchivo($index)
+    {
+        array_splice($this->archivos_adjuntos, $index, 1);
     }
 
     public function addProduct()
@@ -100,10 +121,9 @@ new class extends Component {
         $provider = Proveedor::find($providerId);
         if ($provider) {
             $this->selected_provider = $provider;
-            $this->selected_provider_id = $provider->id; // Esta línea está bien
+            $this->selected_provider_id = $provider->id;
             $this->show_provider_modal = false;
             $this->provider_search = '';
-
         }
     }
 
@@ -147,7 +167,6 @@ new class extends Component {
             'empresa' => $this->new_provider_company,
         ]);
 
-
         $this->selectProvider($provider->id);
         $this->resetNewProviderFields();
     }
@@ -159,9 +178,30 @@ new class extends Component {
         return redirect()->route('cartas.index');
     }
 
+    private function guardarArchivos($cartaId)
+    {
+        $archivosGuardados = [];
+
+        if (!empty($this->archivos_adjuntos)) {
+            foreach ($this->archivos_adjuntos as $archivo) {
+                $filename = time() . '_' . $archivo->getClientOriginalName();
+                $path = $archivo->storeAs('cartas/adjuntos/' . $cartaId, $filename, 'public');
+
+                $archivosGuardados[] = [
+                    'nombre_original' => $archivo->getClientOriginalName(),
+                    'nombre_guardado' => $filename,
+                    'path' => $path,
+                    'mime_type' => $archivo->getMimeType(),
+                    'size' => $archivo->getSize(),
+                ];
+            }
+        }
+
+        return $archivosGuardados;
+    }
+
     public function save()
     {
-        // Validación manual más específica
         $this->validate([
             'project_name' => 'required|min:5|max:255',
             'service_description' => 'required|min:20',
@@ -172,104 +212,61 @@ new class extends Component {
             'send_type' => 'required|in:email,whatsapp,ambos',
         ]);
 
-        // Validación manual para arrays
         if (empty($this->required_services)) {
             $this->addError('required_services', 'Debe agregar al menos un servicio requerido.');
             return;
         }
 
-        // Quitar el dd() y continuar con el guardado
-        $carta = Carta::create([
-            'codigo' => Carta::generarCodigo(),
-            'nombre_proyecto' => $this->project_name,
-            'descripcion_servicios' => $this->service_description,
-            'creado_por' => auth()->id(),
-            'oficina_fao' => auth()->user()->office ?? 'FAO Bolivia',
-            'responsable_fao_nombre' => auth()->user()->name,
-            'responsable_fao_email' => auth()->user()->email,
-            'responsable_fao_telefono' => auth()->user()->phone,
-            'antecedentes' => $this->background,
-            'servicios_requeridos' => implode(', ', $this->required_services),
-            'productos_requeridos' => $this->required_products,
-            'fecha_inicio' => $this->start_date,
-            'fecha_fin' => $this->end_date,
-            'monto_total' => $this->total_amount ?: null,
-            'moneda' => $this->currency,
-            'proveedor_id' => $this->selected_provider_id,
-            'tipo_envio' => $this->send_type,
-            'mensaje_invitacion' => $this->invitation_message,
-            'estado' => 'borrador',
-        ]);
+        DB::beginTransaction();
 
-        session()->flash('success', 'Carta creada exitosamente como borrador.');
-
-        return redirect()->route('cartas.show', $carta);
-    }
-
-    public function generateDocument($cartaId)
-    {
         try {
-            $carta = Carta::findOrFail($cartaId);
-
-            // Generar el documento
-            $generator = new InvitationDocumentGenerator($carta);
-            $generator->generate();
-
-            // Guardar el documento
-            $filepath = $generator->save();
-
-            // Actualizar la carta con la ruta del documento
-            $carta->update([
-                'document_path' => $filepath
+            $carta = Carta::create([
+                'codigo' => Carta::generarCodigo(),
+                'nombre_proyecto' => $this->project_name,
+                'descripcion_servicios' => $this->service_description,
+                'creado_por' => auth()->id(),
+                'oficina_fao' => auth()->user()->office ?? 'FAO Bolivia',
+                'responsable_fao_nombre' => auth()->user()->name,
+                'responsable_fao_email' => auth()->user()->email,
+                'responsable_fao_telefono' => auth()->user()->phone,
+                'antecedentes' => $this->background,
+                'servicios_requeridos' => implode(', ', $this->required_services),
+                'productos_requeridos' => $this->required_products,
+                'fecha_inicio' => $this->start_date,
+                'fecha_fin' => $this->end_date,
+                'monto_total' => $this->total_amount ?: null,
+                'moneda' => $this->currency,
+                'proveedor_id' => $this->selected_provider_id,
+                'tipo_envio' => $this->send_type,
+                'mensaje_invitacion' => $this->invitation_message,
+                'estado' => 'borrador',
+                'archivos_adjuntos' => null,
             ]);
 
-            session()->flash('success', 'Documento generado exitosamente');
+            // Guardar archivos adjuntos
+            $archivosGuardados = $this->guardarArchivos($carta->id);
 
-            // Retornar la ruta para descarga
-            return response()->download($filepath);
-
-        } catch (\Exception $e) {
-            Log::error('Error generando documento: '.$e->getMessage());
-            session()->flash('error', 'Error al generar el documento: '.$e->getMessage());
-        }
-    }
-
-    public function downloadDocument($cartaId)
-    {
-        try {
-            $carta = Carta::findOrFail($cartaId);
-
-            // Si ya existe el documento, descargarlo
-            if ($carta->document_path && file_exists($carta->document_path)) {
-                return response()->download($carta->document_path);
+            if (!empty($archivosGuardados)) {
+                $carta->update(['archivos_adjuntos' => $archivosGuardados]);
             }
 
-            // Si no existe, generarlo primero
-            return $this->generateDocument($cartaId);
+            DB::commit();
+
+            session()->flash('success', 'Carta creada exitosamente como borrador.');
+            return redirect()->route('cartas.show', $carta);
 
         } catch (\Exception $e) {
-            Log::error('Error descargando documento: '.$e->getMessage());
-            session()->flash('error', 'Error al descargar el documento');
+            DB::rollBack();
+            Log::error('Error guardando carta: ' . $e->getMessage());
+            session()->flash('error', 'Error al guardar la carta: ' . $e->getMessage());
         }
     }
 
     public function sendInvitation()
     {
         try {
-            // 🔍 DEBUG: Verificar datos antes de validar
             Log::info('=== INICIO sendInvitation ===');
-            Log::info('Datos del formulario:', [
-                'project_name' => $this->project_name,
-                'service_description' => strlen($this->service_description ?? ''),
-                'background' => strlen($this->background ?? ''),
-                'required_services' => $this->required_services,
-                'start_date' => $this->start_date,
-                'end_date' => $this->end_date,
-                'selected_provider_id' => $this->selected_provider_id,
-                'send_type' => $this->send_type,
-            ]);
 
-            // Validación manual más específica
             $this->validate([
                 'project_name' => 'required|min:5|max:255',
                 'service_description' => 'required|min:20',
@@ -280,23 +277,14 @@ new class extends Component {
                 'send_type' => 'required|in:email,whatsapp,ambos',
             ]);
 
-            Log::info('✅ Validación pasada');
-
-            // Validación manual para arrays
             if (empty($this->required_services)) {
-                Log::warning('❌ Sin servicios requeridos');
                 $this->addError('required_services', 'Debe agregar al menos un servicio requerido.');
                 session()->flash('error', 'Debe agregar al menos un servicio requerido.');
                 return;
             }
 
-            Log::info('✅ Servicios validados');
-
-            // Iniciar transacción
             DB::beginTransaction();
-            Log::info('🔄 Transacción iniciada');
 
-            // Crear la carta
             $carta = Carta::create([
                 'codigo' => Carta::generarCodigo(),
                 'nombre_proyecto' => $this->project_name,
@@ -322,100 +310,59 @@ new class extends Component {
 
             Log::info('✅ Carta creada con ID: ' . $carta->id);
 
-            // Generar el documento Word automáticamente
-            Log::info('📄 Generando documento Word...');
+            // Guardar archivos adjuntos
+            $archivosGuardados = $this->guardarArchivos($carta->id);
 
+            if (!empty($archivosGuardados)) {
+                $carta->update(['archivos_adjuntos' => $archivosGuardados]);
+            }
+
+            // Generar el documento Word
             $generator = new InvitationDocumentGenerator($carta);
             $generator->generate();
             $filepath = $generator->save();
-
-            // Actualizar la carta con la ruta del documento
             $carta->update(['document_path' => $filepath]);
 
-            Log::info('✅ Documento generado: ' . $filepath);
-
-            // Confirmar transacción
             DB::commit();
-            Log::info('✅ Transacción confirmada');
 
-            // Guardar referencia para usar en el modal
             $this->lastCreatedCarta = $carta;
 
-            // Preparar mensaje según el tipo de envío
             if ($this->send_type === 'whatsapp' || $this->send_type === 'ambos') {
-                Log::info('📱 Preparando mensaje de WhatsApp');
                 $this->prepareWhatsAppMessage($carta);
                 $this->showWhatsAppModal = true;
-                Log::info('✅ Modal de WhatsApp activado');
             } else {
-                // Si solo es email, redirigir
-                Log::info('📧 Solo email, redirigiendo...');
                 session()->flash('success', 'Carta creada, documento generado y enviada exitosamente');
                 return redirect()->route('cartas.index');
             }
 
-            Log::info('=== FIN sendInvitation EXITOSO ===');
-
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            DB::rollBack();
-
-            Log::error('❌ Error de validación:', [
-                'errors' => $e->errors(),
-                'message' => $e->getMessage()
-            ]);
-
-            // Mostrar errores de validación al usuario
-            session()->flash('error', 'Error de validación: ' . implode(', ', array_map(function($errors) {
-                    return implode(', ', $errors);
-                }, $e->errors())));
-
-            throw $e; // Re-lanzar para que Livewire muestre los errores
-
         } catch (\Exception $e) {
             DB::rollBack();
-
-            Log::error('❌ Error general al crear carta:', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
+            Log::error('❌ Error al crear carta: ' . $e->getMessage());
             session()->flash('error', 'Error al crear la carta: ' . $e->getMessage());
-
-            // Mostrar el error en pantalla también
-            $this->addError('general', 'Error: ' . $e->getMessage());
         }
     }
 
     private function prepareWhatsAppMessage(Carta $carta)
     {
         $provider = $carta->proveedor;
-        $phoneNumber = $provider->whatsapp ?: $provider->telefono;
+        $phoneNumber = preg_replace('/[^0-9]/', '', $provider->whatsapp ?: $provider->telefono);
 
-        // Limpiar número de teléfono
-        $phoneNumber = preg_replace('/[^0-9]/', '', $phoneNumber);
-
-        // ⭐ NUEVO: Obtener la URL pública del documento Word
         $documentUrl = '';
         if ($carta->document_path && file_exists($carta->document_path)) {
             $filename = basename($carta->document_path);
             $documentUrl = asset('storage/invitations/'.$filename);
         }
 
-        // Construir el mensaje
         $message = "¡Hola {$provider->nombre}! 👋\n\n";
         $message .= "Te enviamos una invitación de la FAO para participar en:\n\n";
         $message .= "📋 *{$carta->nombre_proyecto}*\n";
         $message .= "🔢 Código: {$carta->codigo}\n\n";
 
-        // ⭐ NUEVO: Agregar información de fechas
         if ($carta->fecha_fin) {
             $fechaLimite = Carbon::parse($carta->fecha_fin)->locale('es')->isoFormat('D [de] MMMM [de] YYYY');
             $message .= "📅 Fecha límite: *{$fechaLimite}*\n\n";
         }
 
-        // ⭐ NUEVO: Agregar presupuesto si existe
         if ($carta->monto_total) {
             $monto = number_format($carta->monto_total, 2, ',', '.');
             $message .= "💰 Presupuesto estimado: {$monto} {$carta->moneda}\n\n";
@@ -424,7 +371,6 @@ new class extends Component {
         $message .= "Para revisar los detalles y responder, visita:\n";
         $message .= route('cartas.public', $carta->codigo)."\n\n";
 
-        // ⭐ NUEVO: Agregar link al documento Word si existe
         if ($documentUrl) {
             $message .= "📄 *Descarga el documento completo aquí:*\n";
             $message .= $documentUrl."\n\n";
@@ -436,34 +382,17 @@ new class extends Component {
 
         session()->flash('whatsapp_url', $whatsappUrl);
         session()->flash('provider_name', $provider->nombre);
-
-        Log::info('WhatsApp preparado', [
-            'carta_id' => $carta->id,
-            'provider' => $provider->nombre,
-            'phone' => $phoneNumber,
-            'url' => $whatsappUrl,
-            'document_url' => $documentUrl, // ⭐ NUEVO: Log del documento
-            'has_document' => !empty($documentUrl), // ⭐ NUEVO: Indicador
-        ]);
     }
-
-// ════════════════════════════════════════════════════════════════════════════
-// Tu función openWhatsAppAndRedirect está PERFECTA - no cambies nada
-// ════════════════════════════════════════════════════════════════════════════
 
     public function openWhatsAppAndRedirect()
     {
-//        $this->showWhatsAppModal = false;
         session()->flash('success', 'Invitación enviada por WhatsApp');
-
-        // Redirigir al show de la carta recién creada
         return redirect()->route('cartas.show', $this->lastCreatedCarta);
     }
 
     public function saveAndGenerateDocument()
     {
         try {
-            // Validación manual más específica
             $this->validate([
                 'project_name' => 'required|min:5|max:255',
                 'service_description' => 'required|min:20',
@@ -473,7 +402,6 @@ new class extends Component {
                 'selected_provider_id' => 'required|exists:proveedors,id',
             ]);
 
-            // Validación manual para arrays
             if (empty($this->required_services)) {
                 $this->addError('required_services', 'Debe agregar al menos un servicio requerido.');
                 return;
@@ -481,7 +409,6 @@ new class extends Component {
 
             DB::beginTransaction();
 
-            // Crear la carta como borrador
             $carta = Carta::create([
                 'codigo' => Carta::generarCodigo(),
                 'nombre_proyecto' => $this->project_name,
@@ -504,17 +431,18 @@ new class extends Component {
                 'estado' => 'borrador',
             ]);
 
-            // Generar el documento Word
-            Log::info('Generando documento Word para carta ID: ' . $carta->id);
+            // Guardar archivos adjuntos
+            $archivosGuardados = $this->guardarArchivos($carta->id);
 
+            if (!empty($archivosGuardados)) {
+                $carta->update(['archivos_adjuntos' => $archivosGuardados]);
+            }
+
+            // Generar el documento Word
             $generator = new InvitationDocumentGenerator($carta);
             $generator->generate();
             $filepath = $generator->save();
-
-            // Actualizar la carta con la ruta del documento
             $carta->update(['document_path' => $filepath]);
-
-            Log::info('Documento generado exitosamente: ' . $filepath);
 
             DB::commit();
 
@@ -522,18 +450,14 @@ new class extends Component {
 
             session()->flash('success', 'Carta guardada y documento generado exitosamente');
 
-            // Descargar el documento automáticamente
             return response()->download($filepath);
 
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Error guardando carta y generando documento: ' . $e->getMessage());
-            Log::error('Stack trace: ' . $e->getTraceAsString());
-
             session()->flash('error', 'Error: ' . $e->getMessage());
         }
     }
-
 
 }; ?>
 
@@ -623,7 +547,6 @@ new class extends Component {
                         Servicios Requeridos
                     </label>
                     <div class="border border-gray-300 dark:border-gray-600 rounded-lg p-4 bg-gray-50 dark:bg-gray-700">
-                        <!-- Tags Container -->
                         @if(count($required_services) > 0)
                             <div class="flex flex-wrap gap-2 mb-4">
                                 @foreach($required_services as $index => $service)
@@ -642,7 +565,6 @@ new class extends Component {
                             </div>
                         @endif
 
-                        <!-- Input para agregar servicios -->
                         <div class="flex gap-2">
                             <flux:input
                                 wire:model="new_service"
@@ -663,7 +585,6 @@ new class extends Component {
                         Productos Requeridos
                     </label>
                     <div class="border border-gray-300 dark:border-gray-600 rounded-lg p-4 bg-gray-50 dark:bg-gray-700">
-                        <!-- Tags Container -->
                         @if(count($required_products) > 0)
                             <div class="flex flex-wrap gap-2 mb-4">
                                 @foreach($required_products as $index => $product)
@@ -682,7 +603,6 @@ new class extends Component {
                             </div>
                         @endif
 
-                        <!-- Input para agregar productos -->
                         <div class="flex gap-2">
                             <flux:input
                                 wire:model="new_product"
@@ -693,6 +613,63 @@ new class extends Component {
                             <flux:button type="button" wire:click="addProduct" variant="outline">
                                 Agregar
                             </flux:button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Archivos Adjuntos - NUEVO -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Archivos Adjuntos
+                    </label>
+                    <div class="border border-gray-300 dark:border-gray-600 rounded-lg p-4 bg-gray-50 dark:bg-gray-700">
+                        <!-- Mostrar archivos adjuntos -->
+                        @if(count($archivos_adjuntos) > 0)
+                            <div class="space-y-2 mb-4">
+                                @foreach($archivos_adjuntos as $index => $archivo)
+                                    <div class="flex items-center justify-between p-3 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600">
+                                        <div class="flex items-center gap-3">
+                                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                                            </svg>
+                                            <div>
+                                                <p class="text-sm font-medium text-gray-900 dark:text-white">{{ $archivo->getClientOriginalName() }}</p>
+                                                <p class="text-xs text-gray-500 dark:text-gray-400">{{ number_format($archivo->getSize() / 1024, 2) }} KB</p>
+                                            </div>
+                                        </div>
+                                        <button type="button" wire:click="removeArchivo({{ $index }})"
+                                                class="text-red-600 hover:text-red-800 dark:text-red-400">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                @endforeach
+                            </div>
+                        @endif
+
+                        <!-- Input de archivos -->
+                        <div class="flex items-center justify-center w-full">
+                            <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700">
+                                <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                                    <svg class="w-8 h-8 mb-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                                    </svg>
+                                    <p class="mb-2 text-sm text-gray-500 dark:text-gray-400">
+                                        <span class="font-semibold">Click para subir</span> o arrastra archivos
+                                    </p>
+                                    <p class="text-xs text-gray-500 dark:text-gray-400">PDF, DOC, DOCX, XLS, XLSX, JPG, PNG (MAX. 10MB)</p>
+                                </div>
+                                <input type="file" wire:model="archivos_adjuntos" multiple class="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" />
+                            </label>
+                        </div>
+
+                        @error('archivos_adjuntos.*')
+                        <p class="mt-2 text-sm text-red-600 dark:text-red-400">{{ $message }}</p>
+                        @enderror
+
+                        <div wire:loading wire:target="archivos_adjuntos" class="mt-2 text-sm text-blue-600 dark:text-blue-400">
+                            Subiendo archivos...
                         </div>
                     </div>
                 </div>
@@ -738,7 +715,7 @@ new class extends Component {
                     </div>
                 </div>
 
-                <!-- Información del Proveedor - Versión Mejorada -->
+                <!-- Información del Proveedor -->
                 <div class="border-t border-gray-200 dark:border-gray-700 pt-8">
                     <div class="flex items-center gap-3 mb-6">
                         <div
@@ -755,17 +732,13 @@ new class extends Component {
                         </div>
                     </div>
 
-                    <!-- Proveedor seleccionado -->
                     @if($selected_provider)
                         <div
-                            class="relative overflow-hidden bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 p-6 rounded-xl border border-emerald-200 dark:border-emerald-800 mb-6 transition-all duration-200 hover:shadow-lg">
-                            <!-- Decoración de fondo -->
-                            <div
-                                class="absolute top-0 right-0 w-32 h-32 bg-emerald-100 dark:bg-emerald-800/30 rounded-full -mr-16 -mt-16 opacity-50"></div>
+                            class="relative overflow-hidden bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/20 p-6 rounded-xl border border-emerald-200 dark:border-emerald-800 mb-6">
+                            <div class="absolute top-0 right-0 w-32 h-32 bg-emerald-100 dark:bg-emerald-800/30 rounded-full -mr-16 -mt-16 opacity-50"></div>
 
                             <div class="relative flex items-start justify-between">
                                 <div class="flex items-start gap-4">
-                                    <!-- Avatar del proveedor -->
                                     <div
                                         class="w-12 h-12 bg-emerald-600 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-md">
                                         {{ substr($selected_provider->nombre, 0, 2) }}
@@ -829,7 +802,6 @@ new class extends Component {
                                     </div>
                                 </div>
 
-                                <!-- Botón para cambiar proveedor -->
                                 <div class="flex gap-2">
                                     <button type="button"
                                             wire:click="openProviderModal"
@@ -854,7 +826,6 @@ new class extends Component {
                             </div>
                         </div>
                     @else
-                        <!-- Estado vacío mejorado -->
                         <div class="relative">
                             <div
                                 class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-8 text-center hover:border-blue-400 dark:hover:border-blue-500 transition-colors duration-200">
@@ -898,7 +869,7 @@ new class extends Component {
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                           d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
                                 </svg>
-                                Método de Envío
+                                Invitación proveedor
                             </h4>
 
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1016,7 +987,6 @@ new class extends Component {
                     <div class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
                         <div
                             class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-                            <!-- Header del Modal -->
                             <div class="p-6 border-b border-gray-200 dark:border-gray-700">
                                 <div class="flex items-center justify-between">
                                     <h2 class="text-xl font-bold text-gray-800 dark:text-white">Seleccionar
@@ -1031,7 +1001,6 @@ new class extends Component {
                                 </div>
                             </div>
 
-                            <!-- Búsqueda -->
                             <div class="p-6 border-b border-gray-200 dark:border-gray-700">
                                 <flux:input
                                     wire:model.live="provider_search"
@@ -1040,7 +1009,6 @@ new class extends Component {
                                 />
                             </div>
 
-                            <!-- Resultados de búsqueda -->
                             <div class="p-6">
                                 @if($provider_search)
                                     <div class="space-y-3 mb-6">
@@ -1070,7 +1038,6 @@ new class extends Component {
                                     </div>
                                 @endif
 
-                                <!-- Formulario para nuevo proveedor -->
                                 <div class="border-t border-gray-200 dark:border-gray-700 pt-6">
                                     <h3 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">Crear Nuevo
                                         Proveedor</h3>
@@ -1130,9 +1097,6 @@ new class extends Component {
                     <flux:button type="submit" variant="outline">
                         Guardar como Borrador
                     </flux:button>
-                    <flux:button type="button" wire:click="saveAndGenerateDocument" variant="outline">
-                        Solo Generar Documento
-                    </flux:button>
                     <flux:button
                         type="button"
                         wire:click="sendInvitation"
@@ -1152,7 +1116,6 @@ new class extends Component {
                     </flux:button>
                 </div>
 
-                <!-- Mostrar errores de validación -->
                 @if (session()->has('error'))
                     <div class="mb-4 p-4 bg-red-50 border-l-4 border-red-500 rounded">
                         <div class="flex items-center gap-2">
@@ -1174,7 +1137,6 @@ new class extends Component {
                         </ul>
                     </div>
                 @endif
-
 
             </form>
         </div>

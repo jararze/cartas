@@ -3,329 +3,915 @@
 namespace App\Services;
 
 use App\Models\Carta;
-use App\Models\Producto;
 use App\Models\Actividad;
 use App\Models\SeguimientoActividad;
-use Illuminate\Support\Facades\DB;
+use Barryvdh\DomPDF\Facade\Pdf;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Style\Border;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Chart\Chart;
+use PhpOffice\PhpSpreadsheet\Chart\DataSeries;
+use PhpOffice\PhpSpreadsheet\Chart\DataSeriesValues;
+use PhpOffice\PhpSpreadsheet\Chart\Legend;
+use PhpOffice\PhpSpreadsheet\Chart\PlotArea;
+use PhpOffice\PhpSpreadsheet\Chart\Title as ChartTitle;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Storage;
 
 class ReporteService
 {
-    /**
-     * Obtener estadísticas generales del sistema
-     */
-    public function getEstadisticasGenerales()
+    public function generarReporte($tipo, $formato, $filtros = [])
     {
-        $totalCartas = Carta::count();
-        $totalPresupuesto = Carta::sum('monto_total');
-        $totalEjecutado = Actividad::sum('gasto_acumulado');
-        $saldoDisponible = $totalPresupuesto - $totalEjecutado;
+        $datos = $this->obtenerDatos($tipo, $filtros);
 
-        $cartasActivas = Carta::whereIn('estado', ['en_ejecucion', 'enviada', 'aceptada'])->count();
-        $cartasFinalizadas = Carta::where('estado', 'finalizada')->count();
+        if ($formato === 'pdf') {
+            return $this->generarPDF($tipo, $datos, $filtros);
+        } elseif ($formato === 'excel') {
+            return $this->generarExcel($tipo, $datos, $filtros);
+        }
 
-        $actividadesTotal = Actividad::count();
-        $actividadesCompletadas = Actividad::where('estado', 'finalizado')->count();
-        $actividadesEnCurso = Actividad::where('estado', 'en_curso')->count();
-        $actividadesPendientes = Actividad::where('estado', 'pendiente')->count();
-        $actividadesAtrasadas = Actividad::where('estado', 'atrasado')->count();
-
-        $progresoPromedio = Actividad::avg('progreso') ?? 0;
-        $ejecucionPresupuestaria = $totalPresupuesto > 0
-            ? ($totalEjecutado / $totalPresupuesto) * 100
-            : 0;
-
-        return [
-            'total_cartas' => $totalCartas,
-            'cartas_activas' => $cartasActivas,
-            'cartas_finalizadas' => $cartasFinalizadas,
-
-            'total_presupuesto' => $totalPresupuesto,
-            'total_ejecutado' => $totalEjecutado,
-            'saldo_disponible' => $saldoDisponible,
-            'ejecucion_presupuestaria' => round($ejecucionPresupuestaria, 2),
-
-            'actividades_total' => $actividadesTotal,
-            'actividades_completadas' => $actividadesCompletadas,
-            'actividades_en_curso' => $actividadesEnCurso,
-            'actividades_pendientes' => $actividadesPendientes,
-            'actividades_atrasadas' => $actividadesAtrasadas,
-
-            'progreso_promedio' => round($progresoPromedio, 2),
-        ];
+        throw new \Exception('Formato no soportado');
     }
 
-    /**
-     * Obtener datos financieros con filtros
-     */
-    public function getDatosFinancieros($filtros = [])
+    private function obtenerDatos($tipo, $filtros)
+    {
+        return match($tipo) {
+            'financiero' => $this->obtenerDatosFinancieros($filtros),
+            'avance' => $this->obtenerDatosAvance($filtros),
+            'actividades' => $this->obtenerDatosActividades($filtros),
+            'resumen' => $this->obtenerDatosResumen($filtros),
+            'ejecutado_vs_planificado' => $this->obtenerDatosEjecutadoVsPlanificado($filtros),
+            'plan_trabajo' => $this->obtenerDatosPlanTrabajo($filtros),
+            default => throw new \Exception('Tipo de reporte no válido'),
+        };
+    }
+
+    private function obtenerDatosFinancieros($filtros)
     {
         $query = Carta::with(['productos.actividades']);
 
-        // Aplicar filtros
-        if (!empty($filtros['fecha_inicio'])) {
+        // Filtro de proveedor
+        if (isset($filtros['proveedor_id'])) {
+            $query->where('proveedor_id', $filtros['proveedor_id']);
+        }
+
+        if (isset($filtros['fecha_inicio']) && $filtros['fecha_inicio']) {
             $query->where('fecha_inicio', '>=', $filtros['fecha_inicio']);
         }
 
-        if (!empty($filtros['fecha_fin'])) {
+        if (isset($filtros['fecha_fin']) && $filtros['fecha_fin']) {
             $query->where('fecha_fin', '<=', $filtros['fecha_fin']);
         }
 
-        if (!empty($filtros['estado'])) {
+        if (isset($filtros['estado']) && $filtros['estado']) {
             $query->where('estado', $filtros['estado']);
         }
 
-        if (!empty($filtros['carta_id'])) {
+        if (isset($filtros['carta_id']) && $filtros['carta_id']) {
             $query->where('id', $filtros['carta_id']);
         }
 
         $cartas = $query->get();
 
         return $cartas->map(function ($carta) {
-            $presupuestoTotal = $carta->productos->sum(function ($producto) {
-                return $producto->actividades->sum('monto');
-            });
-
-            $ejecutadoTotal = $carta->productos->sum(function ($producto) {
-                return $producto->actividades->sum('gasto_acumulado');
-            });
-
-            $progresoPromedio = $carta->productos->avg(function ($producto) {
-                return $producto->actividades->avg('progreso');
-            }) ?? 0;
+            $productos = $carta->productos;
+            $actividades = $productos->flatMap->actividades;
 
             return [
-                'id' => $carta->id,
                 'codigo' => $carta->codigo,
                 'nombre_proyecto' => $carta->nombre_proyecto,
-                'presupuesto_total' => $presupuestoTotal,
-                'ejecutado_total' => $ejecutadoTotal,
-                'saldo' => $presupuestoTotal - $ejecutadoTotal,
-                'porcentaje_ejecucion' => $presupuestoTotal > 0
-                    ? round(($ejecutadoTotal / $presupuestoTotal) * 100, 2)
-                    : 0,
-                'progreso_promedio' => round($progresoPromedio, 2),
-                'fecha_inicio' => $carta->fecha_inicio,
-                'fecha_fin' => $carta->fecha_fin,
                 'estado' => $carta->estado,
-                'productos_count' => $carta->productos->count(),
-                'actividades_count' => $carta->productos->sum(function ($p) {
-                    return $p->actividades->count();
+                'presupuesto_total' => $actividades->sum('monto'),
+                'ejecutado_total' => $actividades->sum('gasto_acumulado'),
+                'saldo' => $actividades->sum('monto') - $actividades->sum('gasto_acumulado'),
+                'porcentaje_ejecucion' => $actividades->sum('monto') > 0
+                    ? ($actividades->sum('gasto_acumulado') / $actividades->sum('monto')) * 100
+                    : 0,
+                'progreso_promedio' => $actividades->avg('progreso') ?? 0,
+            ];
+        });
+    }
+
+    private function obtenerDatosAvance($filtros)
+    {
+        $query = Carta::with(['productos.actividades']);
+
+        // Filtro de proveedor
+        if (isset($filtros['proveedor_id'])) {
+            $query->where('proveedor_id', $filtros['proveedor_id']);
+        }
+
+        if (isset($filtros['fecha_inicio']) && $filtros['fecha_inicio']) {
+            $query->where('fecha_inicio', '>=', $filtros['fecha_inicio']);
+        }
+
+        if (isset($filtros['fecha_fin']) && $filtros['fecha_fin']) {
+            $query->where('fecha_fin', '<=', $filtros['fecha_fin']);
+        }
+
+        if (isset($filtros['carta_id']) && $filtros['carta_id']) {
+            $query->where('id', $filtros['carta_id']);
+        }
+
+        $cartas = $query->get();
+
+        return $cartas->map(function ($carta) {
+            $actividades = $carta->productos->flatMap->actividades;
+            $totalActividades = $actividades->count();
+
+            return [
+                'codigo' => $carta->codigo,
+                'nombre_proyecto' => $carta->nombre_proyecto,
+                'progreso_general' => $actividades->avg('progreso') ?? 0,
+                'total_actividades' => $totalActividades,
+                'completadas' => $actividades->where('progreso', '>=', 100)->count(),
+                'en_curso' => $actividades->where('progreso', '>', 0)->where('progreso', '<', 100)->count(),
+                'pendientes' => $actividades->where('progreso', 0)->count(),
+                'atrasadas' => $actividades->filter(function($act) {
+                    return $act->fecha_fin < now() && $act->progreso < 100;
+                })->count(),
+            ];
+        });
+    }
+
+    private function obtenerDatosActividades($filtros)
+    {
+        $query = Actividad::with(['producto.carta', 'responsable']);
+
+        // Filtro de proveedor
+        if (isset($filtros['proveedor_id'])) {
+            $query->whereHas('producto.carta', function($q) use ($filtros) {
+                $q->where('proveedor_id', $filtros['proveedor_id']);
+            });
+        }
+
+        if (isset($filtros['estado']) && $filtros['estado']) {
+            $query->where('estado', $filtros['estado']);
+        }
+
+        if (isset($filtros['fecha_inicio']) && $filtros['fecha_inicio']) {
+            $query->where('fecha_inicio', '>=', $filtros['fecha_inicio']);
+        }
+
+        if (isset($filtros['fecha_fin']) && $filtros['fecha_fin']) {
+            $query->where('fecha_fin', '<=', $filtros['fecha_fin']);
+        }
+
+        if (isset($filtros['carta_id']) && $filtros['carta_id']) {
+            $query->whereHas('producto.carta', function($q) use ($filtros) {
+                $q->where('id', $filtros['carta_id']);
+            });
+        }
+
+        return $query->get()->map(function ($actividad) {
+            return [
+                'carta_codigo' => $actividad->producto->carta->codigo,
+                'producto' => $actividad->producto->nombre,
+                'actividad' => $actividad->nombre,
+                'responsable' => $actividad->responsable?->name ?? 'Sin asignar',
+                'fecha_inicio' => $actividad->fecha_inicio->format('d/m/Y'),
+                'fecha_fin' => $actividad->fecha_fin->format('d/m/Y'),
+                'progreso' => $actividad->progreso,
+                'estado' => $actividad->estado,
+                'presupuesto' => $actividad->monto,
+                'ejecutado' => $actividad->gasto_acumulado,
+                'saldo' => $actividad->monto - $actividad->gasto_acumulado,
+            ];
+        });
+    }
+
+    private function obtenerDatosResumen($filtros)
+    {
+        $cartasQuery = Carta::with(['productos.actividades']);
+
+        // Filtro de proveedor
+        if (isset($filtros['proveedor_id'])) {
+            $cartasQuery->where('proveedor_id', $filtros['proveedor_id']);
+        }
+
+        $cartas = $cartasQuery->get();
+        $actividades = $cartas->flatMap(function($carta) {
+            return $carta->productos->flatMap->actividades;
+        });
+
+        return [
+            'estadisticas' => [
+                'total_cartas' => $cartas->count(),
+                'cartas_activas' => $cartas->whereIn('estado', ['en_ejecucion', 'enviada'])->count(),
+                'cartas_finalizadas' => $cartas->where('estado', 'finalizada')->count(),
+                'total_presupuesto' => $actividades->sum('monto'),
+                'total_ejecutado' => $actividades->sum('gasto_acumulado'),
+                'saldo_disponible' => $actividades->sum('monto') - $actividades->sum('gasto_acumulado'),
+                'ejecucion_presupuestaria' => $actividades->sum('monto') > 0
+                    ? ($actividades->sum('gasto_acumulado') / $actividades->sum('monto')) * 100
+                    : 0,
+                'progreso_promedio' => $actividades->avg('progreso') ?? 0,
+                'actividades_total' => $actividades->count(),
+                'actividades_completadas' => $actividades->where('progreso', '>=', 100)->count(),
+                'actividades_en_curso' => $actividades->where('progreso', '>', 0)->where('progreso', '<', 100)->count(),
+                'actividades_pendientes' => $actividades->where('progreso', 0)->count(),
+                'actividades_atrasadas' => $actividades->filter(function($act) {
+                    return $act->fecha_fin < now() && $act->progreso < 100;
+                })->count(),
+            ],
+            'alertas' => [
+                'atrasadas' => $actividades->filter(function($act) {
+                    return $act->fecha_fin < now() && $act->progreso < 100;
+                })->count(),
+                'exceden_presupuesto' => $actividades->filter(function($act) {
+                    return $act->gasto_acumulado > $act->monto;
+                })->count(),
+                'riesgo_alto' => SeguimientoActividad::whereIn('nivel_riesgo', ['alto', 'critico'])->distinct('actividad_id')->count(),
+                'proximas_vencer' => $actividades->filter(function($act) {
+                    return $act->fecha_fin->between(now(), now()->addDays(7)) && $act->progreso < 100;
+                })->count(),
+                'total_alertas' => 0,
+            ],
+        ];
+
+        $data['alertas']['total_alertas'] =
+            $data['alertas']['atrasadas'] +
+            $data['alertas']['exceden_presupuesto'] +
+            $data['alertas']['riesgo_alto'] +
+            $data['alertas']['proximas_vencer'];
+
+        return $data;
+    }
+
+    private function obtenerDatosEjecutadoVsPlanificado($filtros)
+    {
+        $query = Carta::with(['productos.actividades.seguimientos']);
+
+        // Filtro de proveedor
+        if (isset($filtros['proveedor_id'])) {
+            $query->where('proveedor_id', $filtros['proveedor_id']);
+        }
+
+        if (isset($filtros['fecha_inicio']) && $filtros['fecha_inicio']) {
+            $query->where('fecha_inicio', '>=', $filtros['fecha_inicio']);
+        }
+
+        if (isset($filtros['fecha_fin']) && $filtros['fecha_fin']) {
+            $query->where('fecha_fin', '<=', $filtros['fecha_fin']);
+        }
+
+        if (isset($filtros['carta_id']) && $filtros['carta_id']) {
+            $query->where('id', $filtros['carta_id']);
+        }
+
+        $cartas = $query->get();
+
+        return $cartas->map(function ($carta) {
+            $actividades = $carta->productos->flatMap->actividades;
+            $presupuestoPlanificado = $actividades->sum('monto');
+            $presupuestoEjecutado = $actividades->sum('gasto_acumulado');
+            $variacion = $presupuestoEjecutado - $presupuestoPlanificado;
+            $variacionPorcentaje = $presupuestoPlanificado > 0
+                ? ($variacion / $presupuestoPlanificado) * 100
+                : 0;
+
+            return [
+                'carta_codigo' => $carta->codigo,
+                'nombre_proyecto' => $carta->nombre_proyecto,
+                'presupuesto_planificado' => $presupuestoPlanificado,
+                'presupuesto_ejecutado' => $presupuestoEjecutado,
+                'variacion' => $variacion,
+                'variacion_porcentaje' => $variacionPorcentaje,
+                'estado' => $variacion > 0 ? 'Sobre presupuesto' : ($variacion < 0 ? 'Bajo presupuesto' : 'En presupuesto'),
+                'productos' => $carta->productos->map(function($producto) {
+                    $actividadesProducto = $producto->actividades;
+                    $planificado = $actividadesProducto->sum('monto');
+                    $ejecutado = $actividadesProducto->sum('gasto_acumulado');
+
+                    return [
+                        'nombre' => $producto->nombre,
+                        'planificado' => $planificado,
+                        'ejecutado' => $ejecutado,
+                        'variacion' => $ejecutado - $planificado,
+                        'actividades' => $actividadesProducto->map(function($actividad) {
+                            return [
+                                'nombre' => $actividad->nombre,
+                                'planificado' => $actividad->monto,
+                                'ejecutado' => $actividad->gasto_acumulado,
+                                'variacion' => $actividad->gasto_acumulado - $actividad->monto,
+                            ];
+                        }),
+                    ];
                 }),
             ];
         });
     }
 
-    /**
-     * Obtener reporte de avance de actividades
-     */
-    public function getReporteAvanceActividades($filtros = [])
+    private function obtenerDatosPlanTrabajo($filtros)
     {
-        $query = Actividad::with(['producto.carta', 'responsable', 'seguimientos']);
+        $query = Carta::with(['productos.actividades.responsable']);
 
-        if (!empty($filtros['carta_id'])) {
-            $query->whereHas('producto', function ($q) use ($filtros) {
-                $q->where('carta_id', $filtros['carta_id']);
-            });
+        // Filtro de proveedor
+        if (isset($filtros['proveedor_id'])) {
+            $query->where('proveedor_id', $filtros['proveedor_id']);
         }
 
-        if (!empty($filtros['estado'])) {
-            $query->where('estado', $filtros['estado']);
+        if (isset($filtros['carta_id']) && $filtros['carta_id']) {
+            $query->where('id', $filtros['carta_id']);
         }
 
-        if (!empty($filtros['fecha_inicio'])) {
-            $query->where('fecha_inicio', '>=', $filtros['fecha_inicio']);
-        }
+        $cartas = $query->get();
 
-        if (!empty($filtros['fecha_fin'])) {
-            $query->where('fecha_fin', '<=', $filtros['fecha_fin']);
-        }
-
-        return $query->get()->map(function ($actividad) {
-            $diasPlanificados = Carbon::parse($actividad->fecha_inicio)
-                ->diffInDays(Carbon::parse($actividad->fecha_fin));
-
-            $diasTranscurridos = Carbon::parse($actividad->fecha_inicio)
-                ->diffInDays(now());
-
-            $avanceEsperado = $diasPlanificados > 0
-                ? min(100, ($diasTranscurridos / $diasPlanificados) * 100)
-                : 0;
-
-            $desviacion = $actividad->progreso - $avanceEsperado;
-
+        return $cartas->map(function ($carta) {
             return [
-                'id' => $actividad->id,
-                'nombre' => $actividad->nombre,
-                'carta' => $actividad->producto->carta->codigo,
-                'producto' => $actividad->producto->nombre,
-                'linea_presupuestaria' => $actividad->linea_presupuestaria,
-                'presupuesto' => $actividad->monto,
-                'ejecutado' => $actividad->gasto_acumulado,
-                'saldo' => $actividad->monto - $actividad->gasto_acumulado,
-                'progreso_real' => $actividad->progreso,
-                'avance_esperado' => round($avanceEsperado, 2),
-                'desviacion' => round($desviacion, 2),
-                'estado' => $actividad->estado,
-                'fecha_inicio' => $actividad->fecha_inicio,
-                'fecha_fin' => $actividad->fecha_fin,
-                'responsable' => $actividad->responsable->name ?? 'Sin asignar',
-                'seguimientos_count' => $actividad->seguimientos->count(),
+                'carta_codigo' => $carta->codigo,
+                'carta_nombre' => $carta->nombre_proyecto,
+                'carta_fecha_inicio' => $carta->fecha_inicio,
+                'carta_fecha_fin' => $carta->fecha_fin,
+                'carta_presupuesto' => $carta->productos->flatMap->actividades->sum('monto'),
+                'productos' => $carta->productos->map(function($producto) {
+                    return [
+                        'nombre' => $producto->nombre,
+                        'descripcion' => $producto->descripcion,
+                        'fecha_inicio' => $producto->fecha_inicio,
+                        'fecha_fin' => $producto->fecha_fin,
+                        'presupuesto' => $producto->actividades->sum('monto'),
+                        'actividades' => $producto->actividades->map(function($actividad) {
+                            return [
+                                'nombre' => $actividad->nombre,
+                                'descripcion' => $actividad->descripcion,
+                                'responsable' => $actividad->responsable?->name ?? 'Sin asignar',
+                                'fecha_inicio' => $actividad->fecha_inicio,
+                                'fecha_fin' => $actividad->fecha_fin,
+                                'duracion_dias' => $actividad->fecha_inicio->diffInDays($actividad->fecha_fin),
+                                'presupuesto' => $actividad->monto,
+                                'ejecutado' => $actividad->gasto_acumulado,
+                                'progreso' => $actividad->progreso,
+                                'estado' => $actividad->estado,
+                                'linea_presupuestaria' => $actividad->linea_presupuestaria,
+                            ];
+                        }),
+                    ];
+                }),
             ];
         });
     }
 
-    /**
-     * Obtener comparativo entre cartas
-     */
-    public function getComparativoCartas($cartaIds = [])
+    private function generarPDF($tipo, $datos, $filtros)
     {
-        $query = Carta::with(['productos.actividades']);
+        $vista = match($tipo) {
+            'financiero' => 'reportes.pdf.financiero',
+            'avance' => 'reportes.pdf.avance',
+            'actividades' => 'reportes.pdf.actividades',
+            'resumen' => 'reportes.pdf.resumen',
+            'ejecutado_vs_planificado' => 'reportes.pdf.ejecutado-vs-planificado',
+            'plan_trabajo' => 'reportes.pdf.plan-trabajo',
+            default => throw new \Exception('Vista no encontrada'),
+        };
 
-        if (!empty($cartaIds)) {
-            $query->whereIn('id', $cartaIds);
+        $pdf = Pdf::loadView($vista, [
+            'datos' => $datos,
+            'fechaGeneracion' => now()->format('d/m/Y H:i:s'),
+            'fechaInicio' => $filtros['fecha_inicio'] ?? null,
+            'fechaFin' => $filtros['fecha_fin'] ?? null,
+        ]);
+
+        $pdf->setPaper('letter', 'portrait');
+
+        $filename = $tipo . '_' . now()->format('Y-m-d_His') . '.pdf';
+        $path = 'reportes/' . $filename;
+
+        Storage::disk('public')->put($path, $pdf->output());
+
+        return Storage::disk('public')->url($path);
+    }
+
+    private function generarExcel($tipo, $datos, $filtros)
+    {
+        $spreadsheet = new Spreadsheet();
+
+        match($tipo) {
+            'financiero' => $this->generarExcelFinanciero($spreadsheet, $datos),
+            'avance' => $this->generarExcelAvance($spreadsheet, $datos),
+            'actividades' => $this->generarExcelActividades($spreadsheet, $datos),
+            'resumen' => $this->generarExcelResumen($spreadsheet, $datos),
+            'ejecutado_vs_planificado' => $this->generarExcelEjecutadoVsPlanificado($spreadsheet, $datos),
+            'plan_trabajo' => $this->generarExcelPlanTrabajo($spreadsheet, $datos),
+            default => throw new \Exception('Tipo de Excel no soportado'),
+        };
+
+        $writer = new Xlsx($spreadsheet);
+        $filename = $tipo . '_' . now()->format('Y-m-d_His') . '.xlsx';
+        $path = storage_path('app/public/reportes/' . $filename);
+
+        if (!file_exists(dirname($path))) {
+            mkdir(dirname($path), 0777, true);
         }
 
-        return $query->get()->map(function ($carta) {
-            $actividades = $carta->productos->flatMap->actividades;
+        $writer->save($path);
 
-            $presupuestoTotal = $actividades->sum('monto');
-            $ejecutadoTotal = $actividades->sum('gasto_acumulado');
-
-            return [
-                'codigo' => $carta->codigo,
-                'nombre' => $carta->nombre_proyecto,
-                'presupuesto' => $presupuestoTotal,
-                'ejecutado' => $ejecutadoTotal,
-                'eficiencia' => $presupuestoTotal > 0
-                    ? round(($ejecutadoTotal / $presupuestoTotal) * 100, 2)
-                    : 0,
-                'progreso' => round($actividades->avg('progreso'), 2),
-                'actividades_total' => $actividades->count(),
-                'actividades_completadas' => $actividades->where('estado', 'finalizado')->count(),
-                'productos_count' => $carta->productos->count(),
-                'duracion_dias' => Carbon::parse($carta->fecha_inicio)
-                    ->diffInDays(Carbon::parse($carta->fecha_fin)),
-            ];
-        });
+        return Storage::disk('public')->url('reportes/' . $filename);
     }
 
-    /**
-     * Obtener análisis de desempeño por línea presupuestaria
-     */
-    public function getAnalisisPorLineaPresupuestaria($filtros = [])
+    private function generarExcelFinanciero($spreadsheet, $datos)
     {
-        $query = Actividad::select(
-            'linea_presupuestaria',
-            DB::raw('COUNT(*) as total_actividades'),
-            DB::raw('SUM(monto) as presupuesto_total'),
-            DB::raw('SUM(gasto_acumulado) as ejecutado_total'),
-            DB::raw('AVG(progreso) as progreso_promedio'),
-            DB::raw('COUNT(CASE WHEN estado = "finalizado" THEN 1 END) as completadas'),
-            DB::raw('COUNT(CASE WHEN estado = "atrasado" THEN 1 END) as atrasadas')
-        );
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Reporte Financiero');
 
-        if (!empty($filtros['carta_id'])) {
-            $query->whereHas('producto', function ($q) use ($filtros) {
-                $q->where('carta_id', $filtros['carta_id']);
-            });
+        // Encabezado
+        $sheet->setCellValue('A1', 'REPORTE FINANCIERO - FAO');
+        $sheet->mergeCells('A1:I1');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
+        $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+        // Cabeceras
+        $headers = ['#', 'Código', 'Proyecto', 'Presupuesto', 'Ejecutado', 'Saldo', '% Ejecución', 'Progreso', 'Estado'];
+        $col = 'A';
+        foreach ($headers as $header) {
+            $sheet->setCellValue($col . '3', $header);
+            $sheet->getStyle($col . '3')->getFont()->setBold(true);
+            $sheet->getStyle($col . '3')->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('0073e6');
+            $sheet->getStyle($col . '3')->getFont()->getColor()->setRGB('FFFFFF');
+            $col++;
         }
 
-        return $query->groupBy('linea_presupuestaria')
-            ->get()
-            ->map(function ($item) {
-                $eficiencia = $item->presupuesto_total > 0
-                    ? ($item->ejecutado_total / $item->presupuesto_total) * 100
-                    : 0;
+        // Datos
+        $row = 4;
+        foreach ($datos as $index => $item) {
+            $sheet->setCellValue('A' . $row, $index + 1);
+            $sheet->setCellValue('B' . $row, $item['codigo']);
+            $sheet->setCellValue('C' . $row, $item['nombre_proyecto']);
+            $sheet->setCellValue('D' . $row, $item['presupuesto_total']);
+            $sheet->setCellValue('E' . $row, $item['ejecutado_total']);
+            $sheet->setCellValue('F' . $row, $item['saldo']);
+            $sheet->setCellValue('G' . $row, $item['porcentaje_ejecucion'] / 100);
+            $sheet->setCellValue('H' . $row, $item['progreso_promedio'] / 100);
+            $sheet->setCellValue('I' . $row, ucfirst($item['estado']));
+            $row++;
+        }
 
-                return [
-                    'linea' => $item->linea_presupuestaria,
-                    'actividades' => $item->total_actividades,
-                    'presupuesto' => $item->presupuesto_total,
-                    'ejecutado' => $item->ejecutado_total,
-                    'saldo' => $item->presupuesto_total - $item->ejecutado_total,
-                    'eficiencia' => round($eficiencia, 2),
-                    'progreso' => round($item->progreso_promedio, 2),
-                    'completadas' => $item->completadas,
-                    'atrasadas' => $item->atrasadas,
-                    'tasa_completitud' => $item->total_actividades > 0
-                        ? round(($item->completadas / $item->total_actividades) * 100, 2)
-                        : 0,
-                ];
-            });
+        // Formato
+        $sheet->getStyle('D4:F' . ($row - 1))->getNumberFormat()
+            ->setFormatCode('$#,##0.00');
+        $sheet->getStyle('G4:H' . ($row - 1))->getNumberFormat()
+            ->setFormatCode('0.00%');
+
+        // Totales
+        $sheet->setCellValue('C' . $row, 'TOTALES:');
+        $sheet->setCellValue('D' . $row, '=SUM(D4:D' . ($row - 1) . ')');
+        $sheet->setCellValue('E' . $row, '=SUM(E4:E' . ($row - 1) . ')');
+        $sheet->setCellValue('F' . $row, '=SUM(F4:F' . ($row - 1) . ')');
+        $sheet->getStyle('C' . $row . ':F' . $row)->getFont()->setBold(true);
+
+        // Ajustar columnas
+        foreach (range('A', 'I') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
     }
 
-    /**
-     * Obtener timeline de seguimientos
-     */
-    public function getTimelineSeguimientos($actividadId)
+    private function generarExcelEjecutadoVsPlanificado($spreadsheet, $datos)
     {
-        return SeguimientoActividad::where('actividad_id', $actividadId)
-            ->with(['registradoPor'])
-            ->orderBy('fecha_registro', 'desc')
-            ->get()
-            ->map(function ($seguimiento) {
-                return [
-                    'fecha' => $seguimiento->fecha_registro,
-                    'progreso_anterior' => $seguimiento->progreso_anterior,
-                    'progreso_nuevo' => $seguimiento->progreso_nuevo,
-                    'incremento_progreso' => $seguimiento->progreso_nuevo - $seguimiento->progreso_anterior,
-                    'monto_gastado' => $seguimiento->monto_gastado,
-                    'gasto_acumulado' => $seguimiento->gasto_acumulado_nuevo,
-                    'descripcion' => $seguimiento->descripcion_avance,
-                    'responsable' => $seguimiento->responsable_nombre,
-                    'registrado_por' => $seguimiento->registradoPor->name,
-                    'excede_presupuesto' => $seguimiento->excede_presupuesto,
-                    'nivel_riesgo' => $seguimiento->nivel_riesgo,
-                ];
-            });
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Ejecutado vs Planificado');
+
+        // Encabezado
+        $sheet->setCellValue('A1', 'REPORTE: EJECUTADO VS PLANIFICADO');
+        $sheet->mergeCells('A1:G1');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
+        $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+        // Cabeceras
+        $headers = ['#', 'Código Carta', 'Proyecto', 'Planificado', 'Ejecutado', 'Variación', '% Variación'];
+        $col = 'A';
+        foreach ($headers as $header) {
+            $sheet->setCellValue($col . '3', $header);
+            $sheet->getStyle($col . '3')->getFont()->setBold(true);
+            $sheet->getStyle($col . '3')->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('0073e6');
+            $sheet->getStyle($col . '3')->getFont()->getColor()->setRGB('FFFFFF');
+            $col++;
+        }
+
+        // Datos
+        $row = 4;
+        foreach ($datos as $index => $item) {
+            $sheet->setCellValue('A' . $row, $index + 1);
+            $sheet->setCellValue('B' . $row, $item['carta_codigo']);
+            $sheet->setCellValue('C' . $row, $item['nombre_proyecto']);
+            $sheet->setCellValue('D' . $row, $item['presupuesto_planificado']);
+            $sheet->setCellValue('E' . $row, $item['presupuesto_ejecutado']);
+            $sheet->setCellValue('F' . $row, $item['variacion']);
+            $sheet->setCellValue('G' . $row, $item['variacion_porcentaje'] / 100);
+
+            // Color según variación
+            if ($item['variacion'] > 0) {
+                $sheet->getStyle('F' . $row . ':G' . $row)->getFont()->getColor()->setRGB('FF0000');
+            } elseif ($item['variacion'] < 0) {
+                $sheet->getStyle('F' . $row . ':G' . $row)->getFont()->getColor()->setRGB('00AA00');
+            }
+
+            $row++;
+        }
+
+        // Formato
+        $sheet->getStyle('D4:F' . ($row - 1))->getNumberFormat()
+            ->setFormatCode('$#,##0.00');
+        $sheet->getStyle('G4:G' . ($row - 1))->getNumberFormat()
+            ->setFormatCode('0.00%');
+
+        // Totales
+        $sheet->setCellValue('C' . $row, 'TOTALES:');
+        $sheet->setCellValue('D' . $row, '=SUM(D4:D' . ($row - 1) . ')');
+        $sheet->setCellValue('E' . $row, '=SUM(E4:E' . ($row - 1) . ')');
+        $sheet->setCellValue('F' . $row, '=SUM(F4:F' . ($row - 1) . ')');
+        $sheet->getStyle('C' . $row . ':F' . $row)->getFont()->setBold(true);
+
+        // Ajustar columnas
+        foreach (range('A', 'G') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
     }
 
-    /**
-     * Obtener alertas y riesgos
-     */
-    public function getAlertasYRiesgos()
+    private function generarExcelPlanTrabajo($spreadsheet, $datos)
     {
-        $actividadesAtrasadas = Actividad::where('estado', 'atrasado')->count();
+        // Hoja 1: Plan de Trabajo Detallado
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Plan de Trabajo');
 
-        $actividadesExcedenPresupuesto = Actividad::whereRaw('gasto_acumulado > monto')->count();
+        $row = 1;
+        foreach ($datos as $carta) {
+            // Encabezado Carta
+            $sheet->setCellValue('A' . $row, 'CARTA: ' . $carta['carta_codigo']);
+            $sheet->mergeCells('A' . $row . ':J' . $row);
+            $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(14);
+            $sheet->getStyle('A' . $row)->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('0073e6');
+            $sheet->getStyle('A' . $row)->getFont()->getColor()->setRGB('FFFFFF');
+            $row++;
 
-        $actividadesRiesgoAlto = SeguimientoActividad::where('nivel_riesgo', 'alto')
-            ->orWhere('nivel_riesgo', 'critico')
-            ->distinct('actividad_id')
-            ->count();
+            $sheet->setCellValue('A' . $row, $carta['carta_nombre']);
+            $sheet->mergeCells('A' . $row . ':J' . $row);
+            $row++;
 
-        $actividadesProximasVencer = Actividad::where('estado', 'en_curso')
-            ->where('fecha_fin', '<=', now()->addDays(7))
-            ->count();
+            // Cabeceras
+            $headers = ['Producto/Actividad', 'Descripción', 'Responsable', 'Inicio', 'Fin', 'Duración', 'Presupuesto', 'Ejecutado', 'Progreso', 'Estado'];
+            $col = 'A';
+            foreach ($headers as $header) {
+                $sheet->setCellValue($col . $row, $header);
+                $sheet->getStyle($col . $row)->getFont()->setBold(true);
+                $sheet->getStyle($col . $row)->getFill()
+                    ->setFillType(Fill::FILL_SOLID)
+                    ->getStartColor()->setRGB('CCCCCC');
+                $col++;
+            }
+            $row++;
 
-        return [
-            'atrasadas' => $actividadesAtrasadas,
-            'exceden_presupuesto' => $actividadesExcedenPresupuesto,
-            'riesgo_alto' => $actividadesRiesgoAlto,
-            'proximas_vencer' => $actividadesProximasVencer,
-            'total_alertas' => $actividadesAtrasadas + $actividadesExcedenPresupuesto +
-                $actividadesRiesgoAlto + $actividadesProximasVencer,
+            foreach ($carta['productos'] as $producto) {
+                // Producto
+                $sheet->setCellValue('A' . $row, $producto['nombre']);
+                $sheet->setCellValue('B' . $row, $producto['descripcion']);
+                $sheet->setCellValue('D' . $row, $producto['fecha_inicio']->format('d/m/Y'));
+                $sheet->setCellValue('E' . $row, $producto['fecha_fin']->format('d/m/Y'));
+                $sheet->setCellValue('G' . $row, $producto['presupuesto']);
+                $sheet->getStyle('A' . $row)->getFont()->setBold(true);
+                $sheet->getStyle('A' . $row . ':J' . $row)->getFill()
+                    ->setFillType(Fill::FILL_SOLID)
+                    ->getStartColor()->setRGB('E8F4F8');
+                $row++;
+
+                // Actividades
+                foreach ($producto['actividades'] as $actividad) {
+                    $sheet->setCellValue('A' . $row, '  → ' . $actividad['nombre']);
+                    $sheet->setCellValue('B' . $row, $actividad['descripcion']);
+                    $sheet->setCellValue('C' . $row, $actividad['responsable']);
+                    $sheet->setCellValue('D' . $row, $actividad['fecha_inicio']->format('d/m/Y'));
+                    $sheet->setCellValue('E' . $row, $actividad['fecha_fin']->format('d/m/Y'));
+                    $sheet->setCellValue('F' . $row, $actividad['duracion_dias'] . ' días');
+                    $sheet->setCellValue('G' . $row, $actividad['presupuesto']);
+                    $sheet->setCellValue('H' . $row, $actividad['ejecutado']);
+                    $sheet->setCellValue('I' . $row, $actividad['progreso'] / 100);
+                    $sheet->setCellValue('J' . $row, ucfirst($actividad['estado']));
+                    $row++;
+                }
+            }
+            $row += 2; // Espacio entre cartas
+        }
+
+        // Formato
+        $sheet->getStyle('G4:H' . $row)->getNumberFormat()->setFormatCode('$#,##0.00');
+        $sheet->getStyle('I4:I' . $row)->getNumberFormat()->setFormatCode('0%');
+
+        // Ajustar columnas
+        foreach (range('A', 'J') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
+
+        // Hoja 2: Diagrama de Gantt
+        $this->generarGantt($spreadsheet, $datos);
+    }
+
+    private function generarGantt($spreadsheet, $datos)
+    {
+        $ganttSheet = $spreadsheet->createSheet();
+        $ganttSheet->setTitle('Diagrama Gantt');
+
+        // Calcular rango de fechas
+        $fechaMin = null;
+        $fechaMax = null;
+
+        foreach ($datos as $carta) {
+            if (!$fechaMin || $carta['carta_fecha_inicio'] < $fechaMin) {
+                $fechaMin = $carta['carta_fecha_inicio'];
+            }
+            if (!$fechaMax || $carta['carta_fecha_fin'] > $fechaMax) {
+                $fechaMax = $carta['carta_fecha_fin'];
+            }
+        }
+
+        // Encabezado
+        $ganttSheet->setCellValue('A1', 'DIAGRAMA DE GANTT');
+        $ganttSheet->mergeCells('A1:D1');
+        $ganttSheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
+
+        $ganttSheet->setCellValue('A3', 'Actividad');
+        $ganttSheet->setCellValue('B3', 'Inicio');
+        $ganttSheet->setCellValue('C3', 'Fin');
+        $ganttSheet->setCellValue('D3', 'Duración');
+        $ganttSheet->getStyle('A3:D3')->getFont()->setBold(true);
+
+        // Generar columnas de fechas (por semanas)
+        $col = 5; // Columna E
+        $currentDate = $fechaMin->copy()->startOfWeek();
+        $semanas = [];
+
+        while ($currentDate <= $fechaMax) {
+            $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($col);
+            $ganttSheet->setCellValue($colLetter . '3', $currentDate->format('d/m'));
+            $ganttSheet->getStyle($colLetter . '3')->getFont()->setSize(8);
+            $ganttSheet->getColumnDimension($colLetter)->setWidth(3);
+            $semanas[] = ['col' => $col, 'fecha' => $currentDate->copy()];
+            $currentDate->addWeek();
+            $col++;
+        }
+
+        // Llenar actividades
+        $row = 4;
+        foreach ($datos as $carta) {
+            foreach ($carta['productos'] as $producto) {
+                foreach ($producto['actividades'] as $actividad) {
+                    $ganttSheet->setCellValue('A' . $row, $actividad['nombre']);
+                    $ganttSheet->setCellValue('B' . $row, $actividad['fecha_inicio']->format('d/m/Y'));
+                    $ganttSheet->setCellValue('C' . $row, $actividad['fecha_fin']->format('d/m/Y'));
+                    $ganttSheet->setCellValue('D' . $row, $actividad['duracion_dias']);
+
+                    // Pintar barra de Gantt
+                    foreach ($semanas as $semana) {
+                        if ($actividad['fecha_inicio'] <= $semana['fecha'] && $actividad['fecha_fin'] >= $semana['fecha']) {
+                            $colLetter = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($semana['col']);
+                            $ganttSheet->getStyle($colLetter . $row)->getFill()
+                                ->setFillType(Fill::FILL_SOLID)
+                                ->getStartColor()->setRGB('4472C4');
+                        }
+                    }
+                    $row++;
+                }
+            }
+        }
+
+        // Ajustar columnas
+        foreach (['A', 'B', 'C', 'D'] as $col) {
+            $ganttSheet->getColumnDimension($col)->setAutoSize(true);
+        }
+    }
+
+    // Métodos auxiliares para otros reportes
+    private function generarExcelAvance($spreadsheet, $datos)
+    {
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Reporte de Avance');
+
+        // Encabezado
+        $sheet->setCellValue('A1', 'REPORTE DE AVANCE - FAO');
+        $sheet->mergeCells('A1:I1');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
+        $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+        // Cabeceras
+        $headers = ['#', 'Código', 'Proyecto', 'Progreso', 'Total', 'Completadas', 'En Curso', 'Pendientes', 'Atrasadas'];
+        $col = 'A';
+        foreach ($headers as $header) {
+            $sheet->setCellValue($col . '3', $header);
+            $sheet->getStyle($col . '3')->getFont()->setBold(true);
+            $sheet->getStyle($col . '3')->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('7c3aed');
+            $sheet->getStyle($col . '3')->getFont()->getColor()->setRGB('FFFFFF');
+            $col++;
+        }
+
+        // Datos
+        $row = 4;
+        foreach ($datos as $index => $item) {
+            $sheet->setCellValue('A' . $row, $index + 1);
+            $sheet->setCellValue('B' . $row, $item['codigo']);
+            $sheet->setCellValue('C' . $row, $item['nombre_proyecto']);
+            $sheet->setCellValue('D' . $row, $item['progreso_general'] / 100);
+            $sheet->setCellValue('E' . $row, $item['total_actividades']);
+            $sheet->setCellValue('F' . $row, $item['completadas']);
+            $sheet->setCellValue('G' . $row, $item['en_curso']);
+            $sheet->setCellValue('H' . $row, $item['pendientes']);
+            $sheet->setCellValue('I' . $row, $item['atrasadas']);
+            $row++;
+        }
+
+        // Formato
+        $sheet->getStyle('D4:D' . ($row - 1))->getNumberFormat()->setFormatCode('0%');
+
+        // Totales
+        $sheet->setCellValue('D' . $row, 'TOTALES:');
+        $sheet->setCellValue('E' . $row, '=SUM(E4:E' . ($row - 1) . ')');
+        $sheet->setCellValue('F' . $row, '=SUM(F4:F' . ($row - 1) . ')');
+        $sheet->setCellValue('G' . $row, '=SUM(G4:G' . ($row - 1) . ')');
+        $sheet->setCellValue('H' . $row, '=SUM(H4:H' . ($row - 1) . ')');
+        $sheet->setCellValue('I' . $row, '=SUM(I4:I' . ($row - 1) . ')');
+        $sheet->getStyle('D' . $row . ':I' . $row)->getFont()->setBold(true);
+
+        // Ajustar columnas
+        foreach (range('A', 'I') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
+    }
+
+    private function generarExcelActividades($spreadsheet, $datos)
+    {
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Lista de Actividades');
+
+        // Encabezado
+        $sheet->setCellValue('A1', 'LISTA DE ACTIVIDADES - FAO');
+        $sheet->mergeCells('A1:K1');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16);
+        $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+        // Cabeceras
+        $headers = ['#', 'Carta', 'Producto', 'Actividad', 'Responsable', 'Inicio', 'Fin', 'Presupuesto', 'Ejecutado', 'Saldo', 'Progreso', 'Estado'];
+        $col = 'A';
+        foreach ($headers as $header) {
+            $sheet->setCellValue($col . '3', $header);
+            $sheet->getStyle($col . '3')->getFont()->setBold(true);
+            $sheet->getStyle($col . '3')->getFill()
+                ->setFillType(Fill::FILL_SOLID)
+                ->getStartColor()->setRGB('ea580c');
+            $sheet->getStyle($col . '3')->getFont()->getColor()->setRGB('FFFFFF');
+            $col++;
+        }
+
+        // Datos
+        $row = 4;
+        foreach ($datos as $index => $item) {
+            $sheet->setCellValue('A' . $row, $index + 1);
+            $sheet->setCellValue('B' . $row, $item['carta_codigo']);
+            $sheet->setCellValue('C' . $row, $item['producto']);
+            $sheet->setCellValue('D' . $row, $item['actividad']);
+            $sheet->setCellValue('E' . $row, $item['responsable']);
+            $sheet->setCellValue('F' . $row, $item['fecha_inicio']);
+            $sheet->setCellValue('G' . $row, $item['fecha_fin']);
+            $sheet->setCellValue('H' . $row, $item['presupuesto']);
+            $sheet->setCellValue('I' . $row, $item['ejecutado']);
+            $sheet->setCellValue('J' . $row, $item['saldo']);
+            $sheet->setCellValue('K' . $row, $item['progreso'] / 100);
+            $sheet->setCellValue('L' . $row, ucfirst($item['estado']));
+            $row++;
+        }
+
+        // Formato
+        $sheet->getStyle('H4:J' . ($row - 1))->getNumberFormat()->setFormatCode('$#,##0.00');
+        $sheet->getStyle('K4:K' . ($row - 1))->getNumberFormat()->setFormatCode('0%');
+
+        // Totales
+        $sheet->setCellValue('G' . $row, 'TOTALES:');
+        $sheet->setCellValue('H' . $row, '=SUM(H4:H' . ($row - 1) . ')');
+        $sheet->setCellValue('I' . $row, '=SUM(I4:I' . ($row - 1) . ')');
+        $sheet->setCellValue('J' . $row, '=SUM(J4:J' . ($row - 1) . ')');
+        $sheet->getStyle('G' . $row . ':J' . $row)->getFont()->setBold(true);
+
+        // Ajustar columnas
+        foreach (range('A', 'L') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
+    }
+
+    private function generarExcelResumen($spreadsheet, $datos)
+    {
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Resumen Ejecutivo');
+
+        // Encabezado
+        $sheet->setCellValue('A1', 'RESUMEN EJECUTIVO - FAO');
+        $sheet->mergeCells('A1:D1');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(18);
+        $sheet->getStyle('A1')->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+        $sheet->getStyle('A1')->getFill()
+            ->setFillType(Fill::FILL_SOLID)
+            ->getStartColor()->setRGB('0073e6');
+        $sheet->getStyle('A1')->getFont()->getColor()->setRGB('FFFFFF');
+
+        $row = 3;
+
+        // Estadísticas Generales
+        $sheet->setCellValue('A' . $row, 'ESTADÍSTICAS GENERALES');
+        $sheet->mergeCells('A' . $row . ':B' . $row);
+        $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(14);
+        $row += 2;
+
+        $estadisticas = [
+            ['Total de Cartas', $datos['estadisticas']['total_cartas']],
+            ['Cartas Activas', $datos['estadisticas']['cartas_activas']],
+            ['Cartas Finalizadas', $datos['estadisticas']['cartas_finalizadas']],
+            ['Progreso Promedio', $datos['estadisticas']['progreso_promedio'] . '%'],
         ];
-    }
 
-    /**
-     * Obtener tendencias mensuales
-     */
-    public function getTendenciasMensuales($meses = 6)
-    {
-        $fechaInicio = now()->subMonths($meses)->startOfMonth();
+        foreach ($estadisticas as $stat) {
+            $sheet->setCellValue('A' . $row, $stat[0]);
+            $sheet->setCellValue('B' . $row, $stat[1]);
+            $sheet->getStyle('A' . $row)->getFont()->setBold(true);
+            $row++;
+        }
 
-        return DB::table('seguimiento_actividades')
-            ->select(
-                DB::raw('DATE_FORMAT(fecha_registro, "%Y-%m") as mes'),
-                DB::raw('SUM(monto_gastado) as gasto_mensual'),
-                DB::raw('COUNT(*) as seguimientos_registrados'),
-                DB::raw('AVG(progreso_nuevo - progreso_anterior) as incremento_promedio')
-            )
-            ->where('fecha_registro', '>=', $fechaInicio)
-            ->groupBy('mes')
-            ->orderBy('mes')
-            ->get();
+        $row += 2;
+
+        // Resumen Presupuestario
+        $sheet->setCellValue('A' . $row, 'RESUMEN PRESUPUESTARIO');
+        $sheet->mergeCells('A' . $row . ':C' . $row);
+        $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(14);
+        $row += 2;
+
+        $sheet->setCellValue('A' . $row, 'Concepto');
+        $sheet->setCellValue('B' . $row, 'Monto (USD)');
+        $sheet->setCellValue('C' . $row, 'Porcentaje');
+        $sheet->getStyle('A' . $row . ':C' . $row)->getFont()->setBold(true);
+        $row++;
+
+        $presupuesto = [
+            ['Presupuesto Total', $datos['estadisticas']['total_presupuesto'], '100%'],
+            ['Ejecutado', $datos['estadisticas']['total_ejecutado'], $datos['estadisticas']['ejecucion_presupuestaria'] . '%'],
+            ['Saldo Disponible', $datos['estadisticas']['saldo_disponible'], (100 - $datos['estadisticas']['ejecucion_presupuestaria']) . '%'],
+        ];
+
+        foreach ($presupuesto as $item) {
+            $sheet->setCellValue('A' . $row, $item[0]);
+            $sheet->setCellValue('B' . $row, $item[1]);
+            $sheet->setCellValue('C' . $row, $item[2]);
+            if ($row > ($row - count($presupuesto))) {
+                $sheet->getStyle('A' . $row)->getFont()->setBold(true);
+            }
+            $row++;
+        }
+
+        $sheet->getStyle('B' . ($row - 3) . ':B' . ($row - 1))->getNumberFormat()->setFormatCode('$#,##0.00');
+
+        $row += 2;
+
+        // Estado de Actividades
+        $sheet->setCellValue('A' . $row, 'ESTADO DE ACTIVIDADES');
+        $sheet->mergeCells('A' . $row . ':C' . $row);
+        $sheet->getStyle('A' . $row)->getFont()->setBold(true)->setSize(14);
+        $row += 2;
+
+        $sheet->setCellValue('A' . $row, 'Estado');
+        $sheet->setCellValue('B' . $row, 'Cantidad');
+        $sheet->setCellValue('C' . $row, 'Porcentaje');
+        $sheet->getStyle('A' . $row . ':C' . $row)->getFont()->setBold(true);
+        $row++;
+
+        $totalAct = $datos['estadisticas']['actividades_total'];
+        $actividades = [
+            ['Completadas', $datos['estadisticas']['actividades_completadas']],
+            ['En Curso', $datos['estadisticas']['actividades_en_curso']],
+            ['Pendientes', $datos['estadisticas']['actividades_pendientes']],
+            ['Atrasadas', $datos['estadisticas']['actividades_atrasadas']],
+        ];
+
+        foreach ($actividades as $act) {
+            $sheet->setCellValue('A' . $row, $act[0]);
+            $sheet->setCellValue('B' . $row, $act[1]);
+            $porcentaje = $totalAct > 0 ? ($act[1] / $totalAct) * 100 : 0;
+            $sheet->setCellValue('C' . $row, $porcentaje / 100);
+            $row++;
+        }
+
+        $sheet->getStyle('C' . ($row - 4) . ':C' . ($row - 1))->getNumberFormat()->setFormatCode('0.0%');
+
+        // Totales
+        $sheet->setCellValue('A' . $row, 'TOTAL');
+        $sheet->setCellValue('B' . $row, $totalAct);
+        $sheet->setCellValue('C' . $row, '100%');
+        $sheet->getStyle('A' . $row . ':C' . $row)->getFont()->setBold(true);
+
+        // Ajustar columnas
+        foreach (range('A', 'D') as $col) {
+            $sheet->getColumnDimension($col)->setAutoSize(true);
+        }
     }
 }

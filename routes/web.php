@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Auth\RegisteredUserController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ReporteController;
 use App\Models\Carta;
@@ -16,6 +17,15 @@ Route::get('/invitation/{codigo}', function ($codigo) {
     $carta = Carta::where('codigo', $codigo)->firstOrFail();
     return view('livewire.cartas.public-view', compact('carta'));
 })->name('cartas.public');
+
+// Vista completa - CON autenticación requerida
+Volt::route('invitation/{codigo}/view', 'cartas.authenticated-view')
+    ->middleware(['auth', 'verified', 'verify.carta.access'])
+    ->name('cartas.view');
+
+Route::post('/register', [RegisteredUserController::class, 'store'])
+    ->middleware('guest')
+    ->name('register.store');
 
 Route::get('/dashboard', [DashboardController::class, 'index'])
     ->middleware(['auth', 'verified'])
@@ -44,8 +54,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Volt::route('cartas/crear', 'cartas.create')->name('cartas.create');
     Volt::route('cartas/{carta}', 'cartas.show')->name('cartas.show');
 
+    // 🆕 NUEVA: Panel de KPIs
+    Volt::route('cartas/{carta}/kpis', 'cartas.kpis')
+        ->name('cartas.kpis');
+
     Volt::route('actividades/{actividad}/historial', 'actividades.historial')
         ->name('actividades.historial');
+
+    // 🆕 NUEVA: Página de Seguimiento
+    Volt::route('actividades/{actividad}/seguimiento', 'actividades.seguimiento')
+        ->name('actividades.seguimiento');
 
     Volt::route('reportes', 'reportes.index')->name('reportes.index');
 
@@ -79,5 +97,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Permisos
     Volt::route('configuracion/permisos', 'configuracion.permisos.index')->name('configuracion.permisos.index');
+
+    Volt::route('invitaciones', 'proveedores.invitaciones')
+        ->middleware(['auth', 'verified'])
+        ->name('proveedores.invitaciones');
+
+    Volt::route('adjuntos', 'adjuntos.index')
+        ->middleware(['auth', 'verified'])
+        ->name('adjuntos.index');
+
+    // Editar producto
+    Volt::route('productos/{producto}/edit', 'productos.edit')
+        ->middleware(['auth', 'verified'])
+        ->name('productos.edit');
 
 });

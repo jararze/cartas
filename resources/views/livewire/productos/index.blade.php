@@ -13,22 +13,38 @@ new class extends Component {
 
     public function with(): array
     {
-        $totalProductos = Producto::count();
-        $presupuestoTotal = Producto::sum('presupuesto');
+        $user = auth()->user();
 
-        $productosActivos = Producto::whereHas('carta', function($query) {
+        // FILTRO BASE: Si es proveedor, solo sus productos
+        $baseQuery = Producto::query();
+
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            $baseQuery->whereHas('carta', function($q) use ($user) {
+                $q->where('proveedor_id', $user->proveedor->id);
+            });
+        }
+
+        // KPIs con filtro de proveedor
+        $totalProductos = (clone $baseQuery)->count();
+        $presupuestoTotal = (clone $baseQuery)->sum('presupuesto');
+
+        $productosActivos = (clone $baseQuery)->whereHas('carta', function($query) {
             $query->whereIn('estado', ['en_ejecucion', 'aceptada']);
         })->count();
 
         $progresoPromedio = \DB::table('productos')
             ->join('cartas', 'productos.carta_id', '=', 'cartas.id')
             ->whereIn('cartas.estado', ['en_ejecucion', 'aceptada'])
+            ->when($user->hasRole('Proveedor') && $user->proveedor, function($q) use ($user) {
+                $q->where('cartas.proveedor_id', $user->proveedor->id);
+            })
             ->selectRaw('AVG(
                 (SELECT AVG(progreso) FROM actividades WHERE actividades.producto_id = productos.id)
             ) as promedio')
             ->value('promedio') ?? 0;
 
-        $query = Producto::with(['carta', 'actividades'])
+        // Query de productos con filtros
+        $query = (clone $baseQuery)->with(['carta', 'actividades'])
             ->when($this->search, function($q) {
                 $q->where('nombre', 'like', '%' . $this->search . '%')
                     ->orWhere('descripcion', 'like', '%' . $this->search . '%');
@@ -54,7 +70,14 @@ new class extends Component {
             return $producto;
         });
 
-        $cartas = Carta::whereIn('estado', ['en_ejecucion', 'aceptada', 'borrador'])->get();
+        // Cartas disponibles según rol
+        $cartasQuery = Carta::whereIn('estado', ['en_ejecucion', 'aceptada', 'borrador']);
+
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            $cartasQuery->where('proveedor_id', $user->proveedor->id);
+        }
+
+        $cartas = $cartasQuery->get();
 
         return [
             'kpis' => [

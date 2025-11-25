@@ -18,21 +18,32 @@ new class extends Component {
 
     public function with(): array
     {
-        // KPIs Generales
-        $totalActividades = Actividad::count();
-        $presupuestoTotal = Actividad::sum('monto');
-        $gastoTotal = Actividad::sum('gasto_acumulado');
+        $user = auth()->user();
 
-        $actividadesCompletadas = Actividad::where('estado', 'finalizado')->count();
-        $actividadesEnCurso = Actividad::where('estado', 'en_curso')->count();
-        $actividadesPendientes = Actividad::where('estado', 'pendiente')->count();
-        $actividadesAtrasadas = Actividad::where('estado', 'atrasado')->count();
+        // FILTRO BASE: Si es proveedor, solo sus actividades
+        $baseQuery = Actividad::query();
 
-        $progresoPromedio = Actividad::whereIn('estado', ['en_curso', 'finalizado'])
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            $baseQuery->whereHas('producto.carta', function($q) use ($user) {
+                $q->where('proveedor_id', $user->proveedor->id);
+            });
+        }
+
+        // KPIs con filtro de proveedor
+        $totalActividades = (clone $baseQuery)->count();
+        $presupuestoTotal = (clone $baseQuery)->sum('monto');
+        $gastoTotal = (clone $baseQuery)->sum('gasto_acumulado');
+
+        $actividadesCompletadas = (clone $baseQuery)->where('estado', 'finalizado')->count();
+        $actividadesEnCurso = (clone $baseQuery)->where('estado', 'en_curso')->count();
+        $actividadesPendientes = (clone $baseQuery)->where('estado', 'pendiente')->count();
+        $actividadesAtrasadas = (clone $baseQuery)->where('estado', 'atrasado')->count();
+
+        $progresoPromedio = (clone $baseQuery)->whereIn('estado', ['en_curso', 'finalizado'])
             ->avg('progreso') ?? 0;
 
-        // Actividades con filtros
-        $query = Actividad::with(['producto.carta', 'responsable'])
+        // Query de actividades con filtros
+        $query = (clone $baseQuery)->with(['producto.carta', 'responsable'])
             ->when($this->search, function($q) {
                 $q->where('nombre', 'like', '%' . $this->search . '%')
                     ->orWhere('descripcion', 'like', '%' . $this->search . '%');
@@ -64,8 +75,20 @@ new class extends Component {
             return $actividad;
         });
 
-        $productos = Producto::with('carta')->get();
-        $cartas = Carta::whereIn('estado', ['en_ejecucion', 'aceptada', 'borrador'])->get();
+        // Productos y cartas disponibles según rol
+        $productosQuery = Producto::with('carta');
+        $cartasQuery = Carta::whereIn('estado', ['en_ejecucion', 'aceptada', 'borrador']);
+
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            $productosQuery->whereHas('carta', function($q) use ($user) {
+                $q->where('proveedor_id', $user->proveedor->id);
+            });
+
+            $cartasQuery->where('proveedor_id', $user->proveedor->id);
+        }
+
+        $productos = $productosQuery->get();
+        $cartas = $cartasQuery->get();
 
         return [
             'kpis' => [

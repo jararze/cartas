@@ -11,8 +11,17 @@ use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
+        $user = auth()->user();
+        $busqueda = $request->get('busqueda', '');
+
+        // SI ES PROVEEDOR, DASHBOARD PERSONALIZADO
+        if ($user->hasRole('Proveedor') && $user->proveedor) {
+            return $this->dashboardProveedor($user, $busqueda);
+        }
+
+        $busqueda = $request->get('busqueda', '');
         // ==========================================
         // 1. ESTADÍSTICAS GENERALES (KPIs)
         // ==========================================
@@ -26,14 +35,22 @@ class DashboardController extends Controller
         $actividadesPendientes = Actividad::where('estado', 'pendiente')->count();
         $actividadesAtrasadas = Actividad::where('estado', 'atrasado')->count();
 
+        // Estadísticas de cartas
+        $cartasTotal = Carta::count();
+        $cartasActivas = Carta::whereIn('estado', ['en_ejecucion', 'aceptada'])->count();
+        $cartasPendientes = Carta::where('estado', 'pendiente')->count();
+        $cartasFinalizadas = Carta::where('estado', 'finalizada')->count();
+        $cartasBorrador = Carta::where('estado', 'borrador')->count();
+
         $stats = [
             'presupuesto_total' => $presupuestoTotal,
             'gasto_total' => $gastoTotal,
             'saldo_disponible' => $presupuestoTotal - $gastoTotal,
-            'cartas_activas' => Carta::whereIn('estado', ['en_ejecucion', 'aceptada'])->count(),
-            'cartas_total' => Carta::count(),
-            'cartas_pendientes' => Carta::where('estado', 'pendiente')->count(),
-            'cartas_finalizadas' => Carta::where('estado', 'finalizada')->count(),
+            'cartas_activas' => $cartasActivas,
+            'cartas_total' => $cartasTotal,
+            'cartas_pendientes' => $cartasPendientes,
+            'cartas_finalizadas' => $cartasFinalizadas,
+            'cartas_borrador' => $cartasBorrador,
             'productos_total' => Producto::count(),
             'actividades_total' => $actividadesTotal,
             'actividades_completadas' => $actividadesCompletadas,
@@ -104,30 +121,47 @@ class DashboardController extends Controller
             });
 
         // ==========================================
-        // 5. ACTIVIDADES RECIENTES (Tabla)
+        // 5. CARTAS RECIENTES (Tabla) - CON BÚSQUEDA Y PAGINACIÓN
         // ==========================================
 
-        $actividadesRecientes = Actividad::with(['producto.carta'])
-            ->orderBy('updated_at', 'desc')
-            ->limit(10)
-            ->get()
-            ->map(function($actividad) {
-                return [
-                    'id' => $actividad->id,
-                    'nombre' => $actividad->nombre,
-                    'producto' => $actividad->producto->nombre,
-                    'carta_codigo' => $actividad->producto->carta->codigo,
-                    'estado' => $actividad->estado,
-                    'progreso' => $actividad->progreso,
-                    'presupuesto' => $actividad->monto,
-                    'gasto' => $actividad->gasto_acumulado,
-                    'fecha_inicio' => $actividad->fecha_inicio,
-                    'fecha_fin' => $actividad->fecha_fin,
-                    'dias_restantes' => $actividad->fecha_fin
-                        ? Carbon::parse($actividad->fecha_fin)->diffInDays(Carbon::now(), false)
-                        : null,
-                ];
+        $cartasQuery = Carta::with(['proveedor', 'productos.actividades'])
+            ->orderBy('updated_at', 'desc');
+
+        // Aplicar búsqueda si existe
+        if ($busqueda) {
+            $cartasQuery->where(function($query) use ($busqueda) {
+                $query->where('codigo', 'like', "%{$busqueda}%")
+                    ->orWhere('nombre_proyecto', 'like', "%{$busqueda}%")
+                    ->orWhereHas('proveedor', function($q) use ($busqueda) {
+                        $q->where('nombre', 'like', "%{$busqueda}%");
+                    });
             });
+        }
+
+        $cartasRecientes = $cartasQuery->paginate(10)->through(function($carta) {
+            $actividades = $carta->productos->flatMap->actividades;
+            $progreso = $actividades->avg('progreso') ?? 0;
+            $actividadesTotal = $actividades->count();
+            $actividadesCompletadas = $actividades->where('estado', 'finalizado')->count();
+
+            return [
+                'id' => $carta->id,
+                'codigo' => $carta->codigo,
+                'nombre_proyecto' => $carta->nombre_proyecto,
+                'proveedor' => $carta->proveedor ? $carta->proveedor->nombre : 'Sin proveedor',
+                'estado' => $carta->estado,
+                'progreso' => round($progreso, 1),
+                'presupuesto' => $carta->monto_total,
+                'gasto' => $actividades->sum('gasto_acumulado'),
+                'fecha_inicio' => $carta->fecha_inicio,
+                'fecha_fin' => $carta->fecha_fin,
+                'actividades_total' => $actividadesTotal,
+                'actividades_completadas' => $actividadesCompletadas,
+                'dias_restantes' => $carta->fecha_fin
+                    ? Carbon::parse($carta->fecha_fin)->diffInDays(Carbon::now(), false)
+                    : null,
+            ];
+        });
 
         // ==========================================
         // 6. NOTIFICACIONES Y ALERTAS
@@ -266,14 +300,108 @@ class DashboardController extends Controller
         ];
 
         // ==========================================
-        // 10. RETORNAR VISTA CON TODOS LOS DATOS
+        // 10. RETORNAR VISTA CON TODOS LOS DATOS - MODIFICADO
         // ==========================================
 
         return view('dashboard', compact(
             'stats',
             'chartData',
-            'actividadesRecientes',
-            'notificaciones'
+            'cartasRecientes',
+            'notificaciones',
+            'busqueda'
         ));
     }
+
+
+    private function dashboardProveedor($user, $busqueda)
+    {
+        $proveedor = $user->proveedor;
+
+        // Invitaciones pendientes
+        $invitacionesPendientes = Carta::where('proveedor_id', $proveedor->id)
+            ->whereIn('estado', ['enviada', 'vista'])
+            ->with('creador')
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function($carta) {
+                return [
+                    'id' => $carta->id,
+                    'codigo' => $carta->codigo,
+                    'nombre_proyecto' => $carta->nombre_proyecto,
+                    'responsable' => $carta->responsable_fao_nombre,
+                    'fecha_envio' => $carta->fecha_envio,
+                    'dias_sin_responder' => $carta->fecha_envio ?
+                        Carbon::parse($carta->fecha_envio)->diffInDays(Carbon::now()) : 0,
+                ];
+            });
+
+        // Cartas activas (aceptadas)
+        $cartasActivas = Carta::where('proveedor_id', $proveedor->id)
+            ->whereIn('estado', ['aceptada', 'en_ejecucion'])
+            ->with('productos.actividades')
+            ->get();
+
+        // Estadísticas del proveedor
+        $stats = [
+            'invitaciones_pendientes' => $invitacionesPendientes->count(),
+            'cartas_activas' => $cartasActivas->count(),
+            'cartas_finalizadas' => Carta::where('proveedor_id', $proveedor->id)
+                ->where('estado', 'finalizada')
+                ->count(),
+            'cartas_rechazadas' => Carta::where('proveedor_id', $proveedor->id)
+                ->where('estado', 'rechazada')
+                ->count(),
+        ];
+
+        // Actividades del proveedor
+        $actividades = $cartasActivas->flatMap(function($carta) {
+            return $carta->productos->flatMap->actividades;
+        });
+
+        $stats['actividades_total'] = $actividades->count();
+        $stats['actividades_completadas'] = $actividades->where('estado', 'finalizado')->count();
+        $stats['actividades_en_curso'] = $actividades->where('estado', 'en_curso')->count();
+        $stats['actividades_atrasadas'] = $actividades->where('estado', 'atrasado')->count();
+        $stats['progreso_general'] = $stats['actividades_total'] > 0
+            ? round(($stats['actividades_completadas'] / $stats['actividades_total']) * 100, 1)
+            : 0;
+
+        // Cartas recientes con búsqueda
+        $cartasQuery = Carta::where('proveedor_id', $proveedor->id)
+            ->with('productos.actividades')
+            ->orderBy('updated_at', 'desc');
+
+        if ($busqueda) {
+            $cartasQuery->where(function($query) use ($busqueda) {
+                $query->where('codigo', 'like', "%{$busqueda}%")
+                    ->orWhere('nombre_proyecto', 'like', "%{$busqueda}%");
+            });
+        }
+
+        $cartasRecientes = $cartasQuery->paginate(10)->through(function($carta) {
+            $actividades = $carta->productos->flatMap->actividades;
+            $progreso = $actividades->avg('progreso') ?? 0;
+
+            return [
+                'id' => $carta->id,
+                'codigo' => $carta->codigo,
+                'nombre_proyecto' => $carta->nombre_proyecto,
+                'estado' => $carta->estado,
+                'progreso' => round($progreso, 1),
+                'fecha_inicio' => $carta->fecha_inicio,
+                'fecha_fin' => $carta->fecha_fin,
+                'actividades_total' => $actividades->count(),
+                'actividades_completadas' => $actividades->where('estado', 'finalizado')->count(),
+            ];
+        });
+
+        return view('dashboard-proveedor', compact(
+            'stats',
+            'invitacionesPendientes',
+            'cartasRecientes',
+            'busqueda'
+        ));
+    }
+
+    
 }

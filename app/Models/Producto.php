@@ -76,4 +76,38 @@ class Producto extends Model
             $q->orderBy('fecha_inicio');
         }]);
     }
+
+    /**
+     * Presupuesto real basado en actividades
+     */
+    public function getPresupuestoRealAttribute(): float
+    {
+        return $this->actividades->sum('monto');
+    }
+
+    /**
+     * Verificar si excede el presupuesto estimado
+     */
+    public function getExcedePresupuestoAttribute(): bool
+    {
+        return $this->presupuesto_real > $this->presupuesto;
+    }
+
+    /**
+     * Diferencia entre presupuesto estimado y real
+     */
+    public function getDiferenciaPresupuestoAttribute(): float
+    {
+        return $this->presupuesto - $this->presupuesto_real;
+    }
+
+    /**
+     * Porcentaje utilizado del presupuesto estimado
+     */
+    public function getPorcentajeUtilizadoAttribute(): float
+    {
+        return $this->presupuesto > 0
+            ? round(($this->presupuesto_real / $this->presupuesto) * 100, 2)
+            : 0;
+    }
 }

@@ -4,14 +4,24 @@ use App\Models\Carta;
 use App\Models\Producto;
 use App\Models\Actividad;
 use Livewire\Volt\Component;
+use Livewire\WithPagination;
 
 new class extends Component {
+    use WithPagination;
+
     public Carta $carta;
     public $showKPIModal = false;
     public $showCollaboratorsModal = false;
     public $showProductModal = false;
     public $showActivityModal = false;
     public $selectedProducto = null;
+
+    // ✅ NUEVAS PROPIEDADES PARA BÚSQUEDA Y PAGINACIÓN
+    public $searchProductos = '';
+    public $searchActividades = '';
+    public $selectedProductoIdForDetail = null;
+    public $perPageProductos = 10;
+    public $perPageActividades = 12;
 
     // Formulario nuevo producto
     public $producto_nombre = '';
@@ -56,6 +66,17 @@ new class extends Component {
     public $archivos = [];
     public $imagenes = [];
 
+    // ✅ AGREGAR ESTAS PROPIEDADES
+    public $showFechasWarningModal = false;
+    public $fechasWarningMessage = '';
+    public $tipoCreacionPendiente = null; // 'producto' o 'actividad'
+
+    // ✅ PROPIEDADES PARA VALIDACIONES MEJORADAS
+    public $showAdvertenciasModal = false;
+    public $advertenciasMontos = [];
+    public $advertenciasFechas = [];
+    public $tipoAdvertencia = null; // 'producto', 'actividad'
+
     public function mount(Carta $carta): void
     {
         $this->carta = $carta->load(['productos.actividades', 'colaboradores']);
@@ -63,12 +84,58 @@ new class extends Component {
 
     public function with(): array
     {
-        $totalPresupuesto = $this->carta->productos->sum('presupuesto') ?? 0;
+        // Obtener productos con paginación y búsqueda
+        $productosQuery = $this->carta->productos()
+            ->with(['actividades']);
+
+        // Filtro de búsqueda para productos
+        if ($this->searchProductos) {
+            $productosQuery->where(function($q) {
+                $q->where('nombre', 'like', '%' . $this->searchProductos . '%')
+                    ->orWhere('descripcion', 'like', '%' . $this->searchProductos . '%');
+            });
+        }
+
+        $productos = $productosQuery->orderBy('orden')->paginate($this->perPageProductos, ['*'], 'productosPage');
+
+        // Si hay un producto seleccionado, obtener sus actividades con paginación
+        $actividadesProductoSeleccionado = null;
+        if ($this->selectedProductoIdForDetail) {
+            $actividadesQuery = Actividad::where('producto_id', $this->selectedProductoIdForDetail);
+
+            // Filtro de búsqueda para actividades
+            if ($this->searchActividades) {
+                $actividadesQuery->where(function($q) {
+                    $q->where('nombre', 'like', '%' . $this->searchActividades . '%')
+                        ->orWhere('descripcion', 'like', '%' . $this->searchActividades . '%')
+                        ->orWhere('linea_presupuestaria', 'like', '%' . $this->searchActividades . '%');
+                });
+            }
+
+            $actividadesProductoSeleccionado = $actividadesQuery
+                ->orderBy('fecha_inicio')
+                ->paginate($this->perPageActividades, ['*'], 'actividadesPage');
+        }
+
+        // ✅ PRESUPUESTO REFERENCIAL CORREGIDO
+        $presupuestoReferencial = $this->carta->monto_total ?? 0;
+
+        // Calcular presupuesto total (suma de actividades)
+        $totalPresupuesto = $this->carta->productos->sum(function ($producto) {
+            return $producto->actividades->sum('monto');
+        });
+
         $totalEjecutado = $this->carta->productos->sum(function ($producto) {
             return $producto->actividades->sum('gasto_acumulado');
         });
+
         $saldoDisponible = $totalPresupuesto - $totalEjecutado;
         $porcentajeEjecutado = $totalPresupuesto > 0 ? round(($totalEjecutado / $totalPresupuesto) * 100) : 0;
+
+        // Calcular diferencia entre referencial y real
+        $diferenciaPpto = $totalPresupuesto - $presupuestoReferencial;
+        $excedePptoReferencial = $diferenciaPpto > 0;
+        $porcentajeVariacion = $presupuestoReferencial > 0 ? round(($diferenciaPpto / $presupuestoReferencial) * 100, 1) : 0;
 
         $totalActividades = $this->carta->productos->sum(function ($producto) {
             return $producto->actividades->count();
@@ -87,10 +154,17 @@ new class extends Component {
                 }) / $this->carta->productos->count()) : 0;
 
         return [
+            'productos' => $productos,
+            'actividadesProductoSeleccionado' => $actividadesProductoSeleccionado,
+            'productoSeleccionadoObj' => $this->selectedProductoIdForDetail ? Producto::find($this->selectedProductoIdForDetail) : null,
+            'presupuestoReferencial' => $presupuestoReferencial,
             'totalPresupuesto' => $totalPresupuesto,
             'totalEjecutado' => $totalEjecutado,
             'saldoDisponible' => $saldoDisponible,
             'porcentajeEjecutado' => $porcentajeEjecutado,
+            'diferenciaPpto' => $diferenciaPpto,
+            'excedePptoReferencial' => $excedePptoReferencial,
+            'porcentajeVariacion' => $porcentajeVariacion,
             'totalActividades' => $totalActividades,
             'actividadesCompletadas' => $actividadesCompletadas,
             'actividadesEnCurso' => $actividadesEnCurso,
@@ -282,6 +356,55 @@ new class extends Component {
             'producto_fecha_fin' => 'required|date|after:producto_fecha_inicio',
         ]);
 
+        // ✅ RESETEAR ADVERTENCIAS
+        $this->advertenciasMontos = [];
+        $this->advertenciasFechas = [];
+
+        $hayAdvertencias = false;
+
+        // ═══════════════════════════════════════════════════════════
+        // 📅 VALIDACIONES DE FECHAS DEL PRODUCTO
+        // ═══════════════════════════════════════════════════════════
+
+        $cartaFechaInicio = $this->carta->fecha_inicio ? \Carbon\Carbon::parse($this->carta->fecha_inicio) : null;
+        $cartaFechaFin = $this->carta->fecha_fin ? \Carbon\Carbon::parse($this->carta->fecha_fin) : null;
+        $productoFechaInicio = \Carbon\Carbon::parse($this->producto_fecha_inicio);
+        $productoFechaFin = \Carbon\Carbon::parse($this->producto_fecha_fin);
+
+        $problemasCarta = [];
+
+        if ($cartaFechaInicio && $productoFechaInicio->lt($cartaFechaInicio)) {
+            $hayAdvertencias = true;
+            $problemasCarta[] = "La fecha de inicio del producto (<strong>{$productoFechaInicio->format('d/m/Y')}</strong>) es <strong>anterior</strong> a la fecha de inicio de la carta (<strong>{$cartaFechaInicio->format('d/m/Y')}</strong>)";
+        }
+
+        if ($cartaFechaFin && $productoFechaFin->gt($cartaFechaFin)) {
+            $hayAdvertencias = true;
+            $problemasCarta[] = "La fecha fin del producto (<strong>{$productoFechaFin->format('d/m/Y')}</strong>) es <strong>posterior</strong> a la fecha fin de la carta (<strong>{$cartaFechaFin->format('d/m/Y')}</strong>)";
+        }
+
+        if (!empty($problemasCarta)) {
+            $this->advertenciasFechas['carta'] = [
+                'codigo' => $this->carta->codigo,
+                'fecha_inicio' => $cartaFechaInicio?->format('d/m/Y') ?? 'No definida',
+                'fecha_fin' => $cartaFechaFin?->format('d/m/Y') ?? 'No definida',
+                'problemas' => $problemasCarta,
+            ];
+        }
+
+        // Si hay advertencias, mostrar modal
+        if ($hayAdvertencias) {
+            $this->tipoAdvertencia = 'producto';
+            $this->showAdvertenciasModal = true;
+            return;
+        }
+
+        // Crear producto normalmente
+        $this->ejecutarCreacionProducto();
+    }
+
+    public function ejecutarCreacionProducto(): void
+    {
         $this->carta->productos()->create([
             'nombre' => $this->producto_nombre,
             'descripcion' => $this->producto_descripcion,
@@ -293,9 +416,16 @@ new class extends Component {
         ]);
 
         $this->showProductModal = false;
+        $this->showFechasWarningModal = false;
         $this->carta->refresh();
 
-        session()->flash('message', '✅ Producto creado exitosamente');
+        if ($this->tipoCreacionPendiente === 'producto') {
+            session()->flash('message', '⚠️ Producto creado con fechas fuera del rango de la carta');
+        } else {
+            session()->flash('message', '✅ Producto creado exitosamente');
+        }
+
+        $this->tipoCreacionPendiente = null;
     }
 
     public function openActivityModal($productoId): void
@@ -320,6 +450,186 @@ new class extends Component {
         ]);
 
         $producto = Producto::find($this->selectedProducto);
+
+        // ✅ RESETEAR ADVERTENCIAS
+        $this->advertenciasMontos = [];
+        $this->advertenciasFechas = [];
+
+        $hayAdvertencias = false;
+
+        // ═══════════════════════════════════════════════════════════
+        // 💰 VALIDACIONES DE MONTO
+        // ═══════════════════════════════════════════════════════════
+
+        $montoNuevaActividad = floatval($this->actividad_presupuesto);
+
+        // 1️⃣ VALIDAR CONTRA PRESUPUESTO DEL PRODUCTO
+        $presupuestoProducto = floatval($producto->presupuesto ?? 0);
+        $sumaActividadesProducto = $producto->actividades->sum('monto');
+        $nuevoTotalProducto = $sumaActividadesProducto + $montoNuevaActividad;
+        $diferenciaProducto = $nuevoTotalProducto - $presupuestoProducto;
+
+        if ($diferenciaProducto > 0 && $presupuestoProducto > 0) {
+            $hayAdvertencias = true;
+            $porcentajeExcesoProducto = round(($diferenciaProducto / $presupuestoProducto) * 100, 1);
+
+            $this->advertenciasMontos['producto'] = [
+                'nombre' => $producto->nombre,
+                'presupuesto_asignado' => $presupuestoProducto,
+                'suma_actual' => $sumaActividadesProducto,
+                'monto_nueva' => $montoNuevaActividad,
+                'nuevo_total' => $nuevoTotalProducto,
+                'diferencia' => $diferenciaProducto,
+                'porcentaje_exceso' => $porcentajeExcesoProducto,
+            ];
+        }
+
+        // 2️⃣ VALIDAR CONTRA PRESUPUESTO REFERENCIAL DE LA CARTA
+        $presupuestoReferencialCarta = floatval($this->carta->monto_total ?? 0);
+        $sumaTotalActividadesCarta = $this->carta->productos->sum(function ($p) {
+            return $p->actividades->sum('monto');
+        });
+        $nuevoTotalCarta = $sumaTotalActividadesCarta + $montoNuevaActividad;
+        $diferenciaCarta = $nuevoTotalCarta - $presupuestoReferencialCarta;
+
+        if ($diferenciaCarta > 0 && $presupuestoReferencialCarta > 0) {
+            $hayAdvertencias = true;
+            $porcentajeExcesoCarta = round(($diferenciaCarta / $presupuestoReferencialCarta) * 100, 1);
+
+            $this->advertenciasMontos['carta'] = [
+                'presupuesto_referencial' => $presupuestoReferencialCarta,
+                'suma_actual' => $sumaTotalActividadesCarta,
+                'monto_nueva' => $montoNuevaActividad,
+                'nuevo_total' => $nuevoTotalCarta,
+                'diferencia' => $diferenciaCarta,
+                'porcentaje_exceso' => $porcentajeExcesoCarta,
+            ];
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 📅 VALIDACIONES DE FECHAS
+        // ═══════════════════════════════════════════════════════════
+
+        $actividadFechaInicio = \Carbon\Carbon::parse($this->actividad_fecha_inicio);
+        $actividadFechaFin = \Carbon\Carbon::parse($this->actividad_fecha_fin);
+
+        // 1️⃣ VALIDAR CONTRA FECHAS DEL PRODUCTO
+        $productoFechaInicio = $producto->fecha_inicio ? \Carbon\Carbon::parse($producto->fecha_inicio) : null;
+        $productoFechaFin = $producto->fecha_fin ? \Carbon\Carbon::parse($producto->fecha_fin) : null;
+
+        $problemasProducto = [];
+
+        if ($productoFechaInicio && $actividadFechaInicio->lt($productoFechaInicio)) {
+            $hayAdvertencias = true;
+            $problemasProducto[] = "La fecha de inicio de la actividad (<strong>{$actividadFechaInicio->format('d/m/Y')}</strong>) es <strong>anterior</strong> a la fecha de inicio del producto (<strong>{$productoFechaInicio->format('d/m/Y')}</strong>)";
+        }
+
+        if ($productoFechaFin && $actividadFechaFin->gt($productoFechaFin)) {
+            $hayAdvertencias = true;
+            $problemasProducto[] = "La fecha fin de la actividad (<strong>{$actividadFechaFin->format('d/m/Y')}</strong>) es <strong>posterior</strong> a la fecha fin del producto (<strong>{$productoFechaFin->format('d/m/Y')}</strong>)";
+        }
+
+        if (!empty($problemasProducto)) {
+            $this->advertenciasFechas['producto'] = [
+                'nombre' => $producto->nombre,
+                'fecha_inicio' => $productoFechaInicio?->format('d/m/Y') ?? 'No definida',
+                'fecha_fin' => $productoFechaFin?->format('d/m/Y') ?? 'No definida',
+                'problemas' => $problemasProducto,
+            ];
+        }
+
+        // 2️⃣ VALIDAR CONTRA FECHAS DE LA CARTA
+        $cartaFechaInicio = $this->carta->fecha_inicio ? \Carbon\Carbon::parse($this->carta->fecha_inicio) : null;
+        $cartaFechaFin = $this->carta->fecha_fin ? \Carbon\Carbon::parse($this->carta->fecha_fin) : null;
+
+        $problemasCarta = [];
+
+        if ($cartaFechaInicio && $actividadFechaInicio->lt($cartaFechaInicio)) {
+            $hayAdvertencias = true;
+            $problemasCarta[] = "La fecha de inicio de la actividad (<strong>{$actividadFechaInicio->format('d/m/Y')}</strong>) es <strong>anterior</strong> a la fecha de inicio de la carta (<strong>{$cartaFechaInicio->format('d/m/Y')}</strong>)";
+        }
+
+        if ($cartaFechaFin && $actividadFechaFin->gt($cartaFechaFin)) {
+            $hayAdvertencias = true;
+            $problemasCarta[] = "La fecha fin de la actividad (<strong>{$actividadFechaFin->format('d/m/Y')}</strong>) es <strong>posterior</strong> a la fecha fin de la carta (<strong>{$cartaFechaFin->format('d/m/Y')}</strong>)";
+        }
+
+        if (!empty($problemasCarta)) {
+            $this->advertenciasFechas['carta'] = [
+                'codigo' => $this->carta->codigo,
+                'fecha_inicio' => $cartaFechaInicio?->format('d/m/Y') ?? 'No definida',
+                'fecha_fin' => $cartaFechaFin?->format('d/m/Y') ?? 'No definida',
+                'problemas' => $problemasCarta,
+            ];
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ DECISIÓN FINAL
+        // ═══════════════════════════════════════════════════════════
+
+        if ($hayAdvertencias) {
+            $this->tipoAdvertencia = 'actividad';
+            $this->showAdvertenciasModal = true;
+            return;
+        }
+
+        // Si no hay advertencias, crear actividad normalmente
+        $this->ejecutarCreacionActividad();
+    }
+
+    public function ejecutarCreacionActividad(): void
+    {
+        $producto = Producto::find($this->selectedProducto);
+
+        $producto->actividades()->create([
+            'nombre' => $this->actividad_nombre,
+            'descripcion' => $this->actividad_descripcion,
+            'monto' => $this->actividad_presupuesto,
+            'fecha_inicio' => $this->actividad_fecha_inicio,
+            'fecha_fin' => $this->actividad_fecha_fin,
+            'linea_presupuestaria' => $this->actividad_linea_presupuestaria,
+            'estado' => 'pendiente',
+            'progreso' => 0,
+            'gasto_acumulado' => 0,
+        ]);
+
+        $this->showActivityModal = false;
+        $this->showAdvertenciasModal = false;
+        $this->carta->refresh();
+
+        // Mensaje según si hubo advertencias
+        if ($this->tipoAdvertencia === 'actividad') {
+            session()->flash('message', '⚠️ Actividad creada con advertencias (revise montos y/o fechas)');
+        } else {
+            session()->flash('message', '✅ Actividad creada exitosamente');
+        }
+
+        // Limpiar advertencias
+        $this->tipoAdvertencia = null;
+        $this->advertenciasMontos = [];
+        $this->advertenciasFechas = [];
+    }
+
+    public function confirmarCreacionConFechasFuera(): void
+    {
+        if ($this->tipoCreacionPendiente === 'producto') {
+            $this->ejecutarCreacionProducto();
+        } elseif ($this->tipoCreacionPendiente === 'actividad') {
+            $this->ejecutarCreacionActividad();
+        }
+    }
+
+    public function cancelarCreacionConFechasFuera(): void
+    {
+        $this->showFechasWarningModal = false;
+        $this->tipoCreacionPendiente = null;
+        $this->fechasWarningMessage = '';
+    }
+
+    public function crearActividadForzado(): void
+    {
+        $producto = Producto::find($this->selectedProducto);
+
         $producto->actividades()->create([
             'nombre' => $this->actividad_nombre,
             'descripcion' => $this->actividad_descripcion,
@@ -335,7 +645,7 @@ new class extends Component {
         $this->showActivityModal = false;
         $this->carta->refresh();
 
-        session()->flash('message', '✅ Actividad creada exitosamente');
+        session()->flash('message', '⚠️ Actividad creada con fechas fuera del rango');
     }
 
     public function openCollaboratorsModal(): void
@@ -428,6 +738,52 @@ new class extends Component {
 
         return $nuevoProgresoNumerico / (($gastoAcumuladoNuevo / $monto) * 100);
     }
+
+    public function updatingSearchProductos()
+    {
+        $this->resetPage('productosPage');
+    }
+
+    public function updatingSearchActividades()
+    {
+        $this->resetPage('actividadesPage');
+    }
+
+    public function crearProductoForzado(): void
+    {
+        // Crear producto sin validación de fechas
+        $this->carta->productos()->create([
+            'nombre' => $this->producto_nombre,
+            'descripcion' => $this->producto_descripcion,
+            'presupuesto' => $this->producto_presupuesto,
+            'fecha_inicio' => $this->producto_fecha_inicio,
+            'fecha_fin' => $this->producto_fecha_fin,
+            'indicadores_kpi' => [],
+            'orden' => $this->carta->productos->count() + 1,
+        ]);
+
+        $this->showProductModal = false;
+        $this->carta->refresh();
+
+        session()->flash('message', '⚠️ Producto creado con fechas fuera del rango de la carta');
+    }
+
+    public function confirmarCreacionConAdvertencias(): void
+    {
+        if ($this->tipoAdvertencia === 'actividad') {
+            $this->ejecutarCreacionActividad();
+        } elseif ($this->tipoAdvertencia === 'producto') {
+            $this->ejecutarCreacionProducto();
+        }
+    }
+
+    public function cancelarCreacionConAdvertencias(): void
+    {
+        $this->showAdvertenciasModal = false;
+        $this->tipoAdvertencia = null;
+        $this->advertenciasMontos = [];
+        $this->advertenciasFechas = [];
+    }
 }; ?>
 
 <div class="min-h-screen">
@@ -461,60 +817,199 @@ new class extends Component {
         @endif
 
         <!-- Resumen Ejecutivo -->
-        <div
-            class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-8">
             <div class="flex items-center justify-between mb-6">
-                <h2 class="text-xl font-bold text-gray-900 dark:text-white">Resumen Ejecutivo</h2>
+                <h2 class="text-xl font-bold text-gray-900 dark:text-white">📊 Resumen Ejecutivo</h2>
                 <div class="flex gap-3">
-                    <button wire:click="$set('showKPIModal', true)"
-                            class="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors">
+                    <a href="{{ route('cartas.kpis', $carta->id) }}"
+                       class="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
                         </svg>
                         Ver KPIs
-                    </button>
+                    </a>
                     <button wire:click="openCollaboratorsModal"
                             class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
                         </svg>
                         Colaboradores
                     </button>
                 </div>
             </div>
 
-            <!-- Métricas Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-                <div class="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4 border-l-4 border-blue-500">
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Presupuesto Total</p>
-                    <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                        USD {{ number_format($totalPresupuesto, 2) }}</p>
-                    <p class="text-xs text-blue-600 dark:text-blue-400">{{ $carta->productos->count() }} productos</p>
+            <!-- SECCIÓN 1: PRESUPUESTOS (3 NIVELES) -->
+            <div class="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900 rounded-xl border-2 border-slate-200 dark:border-slate-700 p-6 mb-6">
+                <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    💰 Estructura Presupuestaria
+                </h3>
+
+                @php
+                    $presupuestoProductos = $carta->productos->sum('presupuesto');
+                    $diferenciaCartaProductos = $presupuestoProductos - $presupuestoReferencial;
+                    $excedeCartaProductos = $diferenciaCartaProductos > 0;
+                    $diferenciaTotalReal = $totalPresupuesto - $presupuestoReferencial;
+                    $excedeTotalReal = $diferenciaTotalReal > 0;
+                @endphp
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                    <!-- Nivel 1: Presupuesto Carta (Referencial Original) -->
+                    <div class="bg-white dark:bg-gray-800 rounded-lg p-4 border-2 border-indigo-200 dark:border-indigo-800">
+                        <div class="flex items-center gap-2 mb-2">
+                            <div class="w-8 h-8 bg-indigo-100 dark:bg-indigo-900/30 rounded-lg flex items-center justify-center">
+                                <svg class="w-4 h-4 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                </svg>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-xs font-medium text-gray-600 dark:text-gray-400">Nivel 1: Carta</p>
+                                <p class="text-xs text-indigo-600 dark:text-indigo-400">Presupuesto Original</p>
+                            </div>
+                        </div>
+                        <p class="text-2xl font-bold text-indigo-600 dark:text-indigo-400">
+                            ${{ number_format($presupuestoReferencial, 0) }}
+                        </p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Monto carta documento</p>
+                    </div>
+
+                    <!-- Nivel 2: Presupuesto Productos (Referencial Asignado) -->
+                    <div class="bg-white dark:bg-gray-800 rounded-lg p-4 border-2 border-blue-200 dark:border-blue-800">
+                        <div class="flex items-center gap-2 mb-2">
+                            <div class="w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                                <svg class="w-4 h-4 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                                </svg>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-xs font-medium text-gray-600 dark:text-gray-400">Nivel 2: Productos</p>
+                                <p class="text-xs text-blue-600 dark:text-blue-400">Presupuesto Asignado</p>
+                            </div>
+                        </div>
+                        <p class="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                            ${{ number_format($presupuestoProductos, 0) }}
+                        </p>
+                        @if($excedeCartaProductos)
+                            <p class="text-xs text-red-600 dark:text-red-400 font-semibold mt-1">
+                                ⚠️ +${{ number_format($diferenciaCartaProductos, 0) }}
+                            </p>
+                        @elseif($diferenciaCartaProductos < 0)
+                            <p class="text-xs text-green-600 dark:text-green-400 font-semibold mt-1">
+                                ✓ -${{ number_format(abs($diferenciaCartaProductos), 0) }}
+                            </p>
+                        @else
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">{{ $carta->productos->count() }} productos</p>
+                        @endif
+                    </div>
+
+                    <!-- Nivel 3: Presupuesto Real (Suma Actividades) -->
+                    <div class="bg-white dark:bg-gray-800 rounded-lg p-4 border-2 {{ $excedeTotalReal ? 'border-red-200 dark:border-red-800' : 'border-green-200 dark:border-green-800' }}">
+                        <div class="flex items-center gap-2 mb-2">
+                            <div class="w-8 h-8 {{ $excedeTotalReal ? 'bg-red-100 dark:bg-red-900/30' : 'bg-green-100 dark:bg-green-900/30' }} rounded-lg flex items-center justify-center">
+                                <svg class="w-4 h-4 {{ $excedeTotalReal ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                                </svg>
+                            </div>
+                            <div class="flex-1">
+                                <p class="text-xs font-medium text-gray-600 dark:text-gray-400">Nivel 3: Actividades</p>
+                                <p class="text-xs {{ $excedeTotalReal ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400' }}">Presupuesto Real</p>
+                            </div>
+                        </div>
+                        <p class="text-2xl font-bold {{ $excedeTotalReal ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400' }}">
+                            ${{ number_format($totalPresupuesto, 0) }}
+                        </p>
+                        @if($excedeTotalReal)
+                            <p class="text-xs text-red-600 dark:text-red-400 font-semibold mt-1">
+                                ⚠️ +${{ number_format($diferenciaTotalReal, 0) }} vs Carta
+                            </p>
+                        @elseif($diferenciaTotalReal < 0)
+                            <p class="text-xs text-green-600 dark:text-green-400 font-semibold mt-1">
+                                ✓ -${{ number_format(abs($diferenciaTotalReal), 0) }} vs Carta
+                            </p>
+                        @else
+                            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Suma de actividades</p>
+                        @endif
+                    </div>
                 </div>
 
-                <div class="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 border-l-4 border-green-500">
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Ejecutado</p>
-                    <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                        USD {{ number_format($totalEjecutado, 2) }}</p>
-                    <p class="text-xs text-green-600 dark:text-green-400">{{ $porcentajeEjecutado }}% del
-                        presupuesto</p>
+                <!-- Alertas de Presupuesto -->
+                @if($excedeCartaProductos || $excedeTotalReal)
+                    <div class="space-y-2">
+                        @if($excedeCartaProductos)
+                            <div class="flex items-center gap-2 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg px-3 py-2">
+                                <svg class="w-5 h-5 text-orange-600 dark:text-orange-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                                </svg>
+                                <p class="text-xs font-semibold text-orange-800 dark:text-orange-200">
+                                    Los productos asignados exceden el presupuesto de la carta por <strong>${{ number_format($diferenciaCartaProductos, 2) }}</strong>
+                                </p>
+                            </div>
+                        @endif
+
+                        @if($excedeTotalReal)
+                            <div class="flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
+                                <svg class="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                                </svg>
+                                <p class="text-xs font-semibold text-red-800 dark:text-red-200">
+                                    Las actividades exceden el presupuesto original de la carta por <strong>${{ number_format($diferenciaTotalReal, 2) }}</strong>
+                                </p>
+                            </div>
+                        @endif
+                    </div>
+                @endif
+            </div>
+
+            <!-- SECCIÓN 2: EJECUCIÓN Y PROGRESO -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                <!-- Ejecutado -->
+                <div class="text-center bg-green-50 dark:bg-green-900/20 rounded-lg p-4 border border-green-200 dark:border-green-800">
+                    <div class="inline-flex items-center justify-center w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg mb-2">
+                        <svg class="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                    </div>
+                    <p class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Ejecutado</p>
+                    <p class="text-2xl font-bold text-green-600 dark:text-green-400">
+                        ${{ number_format($totalEjecutado, 0) }}
+                    </p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        {{ $porcentajeEjecutado }}% del presupuesto real
+                    </p>
                 </div>
 
-                <div class="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-4 border-l-4 border-purple-500">
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Saldo Disponible</p>
-                    <p class="text-2xl font-bold text-gray-900 dark:text-white">
-                        USD {{ number_format($saldoDisponible, 2) }}</p>
-                    <p class="text-xs text-purple-600 dark:text-purple-400">{{ 100 - $porcentajeEjecutado }}%
-                        restante</p>
+                <!-- Saldo Disponible -->
+                <div class="text-center {{ $saldoDisponible < 0 ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800' }} rounded-lg p-4 border">
+                    <div class="inline-flex items-center justify-center w-12 h-12 {{ $saldoDisponible < 0 ? 'bg-red-100 dark:bg-red-900/30' : 'bg-blue-100 dark:bg-blue-900/30' }} rounded-lg mb-2">
+                        <svg class="w-6 h-6 {{ $saldoDisponible < 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                    </div>
+                    <p class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Saldo Disponible</p>
+                    <p class="text-2xl font-bold {{ $saldoDisponible < 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400' }}">
+                        ${{ number_format(abs($saldoDisponible), 0) }}
+                    </p>
+                    @if($saldoDisponible < 0)
+                        <p class="text-xs text-red-600 dark:text-red-400 font-semibold mt-1">⚠️ Sobregiro</p>
+                    @else
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">{{ 100 - $porcentajeEjecutado }}% restante</p>
+                    @endif
                 </div>
 
-                <div class="bg-orange-50 dark:bg-orange-900/20 rounded-lg p-4 border-l-4 border-orange-500">
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-1">Progreso General</p>
-                    <p class="text-2xl font-bold text-gray-900 dark:text-white">{{ $progresoGeneral }}%</p>
-                    <p class="text-xs text-orange-600 dark:text-orange-400">{{ $actividadesCompletadas }}
-                        /{{ $totalActividades }} actividades</p>
+                <!-- Progreso General -->
+                <div class="text-center bg-purple-50 dark:bg-purple-900/20 rounded-lg p-4 border border-purple-200 dark:border-purple-800">
+                    <div class="inline-flex items-center justify-center w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-lg mb-2">
+                        <svg class="w-6 h-6 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                        </svg>
+                    </div>
+                    <p class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Progreso General</p>
+                    <p class="text-2xl font-bold text-purple-600 dark:text-purple-400">{{ $progresoGeneral }}%</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        {{ $actividadesCompletadas }}/{{ $totalActividades }} actividades
+                    </p>
                 </div>
             </div>
 
@@ -530,15 +1025,112 @@ new class extends Component {
                 </div>
             </div>
 
+            <!-- SECCIÓN 3: INFORMACIÓN DE FECHAS -->
+            @if($carta->fecha_inicio && $carta->fecha_fin)
+                @php
+                    $fechaInicioCarta = \Carbon\Carbon::parse($carta->fecha_inicio);
+                    $fechaFinCarta = \Carbon\Carbon::parse($carta->fecha_fin);
+                    $hoy = \Carbon\Carbon::now();
+                    $duracionTotal = $fechaInicioCarta->diffInDays($fechaFinCarta);
+                    $diasTranscurridos = $fechaInicioCarta->lte($hoy) ? $fechaInicioCarta->diffInDays(min($hoy, $fechaFinCarta)) : 0;
+                    $porcentajeTiempo = $duracionTotal > 0 ? round(($diasTranscurridos / $duracionTotal) * 100) : 0;
+                    $estaAtrasado = $porcentajeTiempo > $progresoGeneral && $porcentajeTiempo > 10;
+                    $estaEnPlazo = !$estaAtrasado;
+                @endphp
+
+                <div class="bg-gradient-to-r from-purple-50 to-pink-50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-xl border-2 border-purple-200 dark:border-purple-800 p-6 mb-6">
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                        </svg>
+                        📅 Timeline del Proyecto
+                    </h3>
+
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                        <div class="text-center bg-white dark:bg-gray-800 rounded-lg p-3">
+                            <p class="text-xs text-gray-600 dark:text-gray-400 mb-1">Fecha Inicio</p>
+                            <p class="text-sm font-bold text-gray-900 dark:text-white">
+                                {{ $fechaInicioCarta->format('d/m/Y') }}
+                            </p>
+                        </div>
+
+                        <div class="text-center bg-white dark:bg-gray-800 rounded-lg p-3">
+                            <p class="text-xs text-gray-600 dark:text-gray-400 mb-1">Fecha Fin</p>
+                            <p class="text-sm font-bold text-gray-900 dark:text-white">
+                                {{ $fechaFinCarta->format('d/m/Y') }}
+                            </p>
+                        </div>
+
+                        <div class="text-center bg-white dark:bg-gray-800 rounded-lg p-3">
+                            <p class="text-xs text-gray-600 dark:text-gray-400 mb-1">Duración Total</p>
+                            <p class="text-sm font-bold text-purple-600 dark:text-purple-400">
+                                {{ $duracionTotal }} días
+                            </p>
+                        </div>
+
+                        <div class="text-center bg-white dark:bg-gray-800 rounded-lg p-3">
+                            <p class="text-xs text-gray-600 dark:text-gray-400 mb-1">Tiempo Transcurrido</p>
+                            <p class="text-sm font-bold text-purple-600 dark:text-purple-400">
+                                {{ $porcentajeTiempo }}%
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Comparación Tiempo vs Progreso -->
+                    <div class="bg-white dark:bg-gray-800 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Progreso vs Tiempo</span>
+                            @if($estaAtrasado)
+                                <span class="text-xs font-semibold text-red-600 dark:text-red-400">⚠️ Atrasado</span>
+                            @else
+                                <span class="text-xs font-semibold text-green-600 dark:text-green-400">✓ En plazo</span>
+                            @endif
+                        </div>
+
+                        <!-- Barra de Tiempo -->
+                        <div class="mb-2">
+                            <div class="flex items-center justify-between text-xs mb-1">
+                                <span class="text-gray-600 dark:text-gray-400">Tiempo</span>
+                                <span class="font-bold text-gray-900 dark:text-white">{{ $porcentajeTiempo }}%</span>
+                            </div>
+                            <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                <div class="bg-gray-600 dark:bg-gray-500 h-2 rounded-full" style="width: {{ $porcentajeTiempo }}%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Barra de Progreso -->
+                        <div>
+                            <div class="flex items-center justify-between text-xs mb-1">
+                                <span class="text-gray-600 dark:text-gray-400">Progreso</span>
+                                <span class="font-bold {{ $estaAtrasado ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400' }}">
+                            {{ $progresoGeneral }}%
+                        </span>
+                            </div>
+                            <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                <div class="{{ $estaAtrasado ? 'bg-red-600 dark:bg-red-500' : 'bg-green-600 dark:bg-green-500' }} h-2 rounded-full" style="width: {{ $progresoGeneral }}%"></div>
+                            </div>
+                        </div>
+
+                        @if($estaAtrasado)
+                            <div class="mt-3 flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
+                                <svg class="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                                </svg>
+                                <p class="text-xs font-semibold text-red-800 dark:text-red-200">
+                                    El proyecto está {{ $porcentajeTiempo - $progresoGeneral }}% atrasado respecto al tiempo transcurrido
+                                </p>
+                            </div>
+                        @endif
+                    </div>
+                </div>
+            @endif
+
             <!-- Stats Summary -->
             <div class="grid grid-cols-3 gap-6">
                 <div class="text-center">
-                    <div
-                        class="flex items-center justify-center w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg mx-auto mb-2">
-                        <svg class="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    <div class="flex items-center justify-center w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg mx-auto mb-2">
+                        <svg class="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
                     </div>
                     <p class="text-2xl font-bold text-green-600 dark:text-green-400">{{ $actividadesCompletadas }}</p>
@@ -546,12 +1138,9 @@ new class extends Component {
                 </div>
 
                 <div class="text-center">
-                    <div
-                        class="flex items-center justify-center w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg mx-auto mb-2">
-                        <svg class="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                    <div class="flex items-center justify-center w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg mx-auto mb-2">
+                        <svg class="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
                         </svg>
                     </div>
                     <p class="text-2xl font-bold text-blue-600 dark:text-blue-400">{{ $actividadesEnCurso }}</p>
@@ -559,12 +1148,9 @@ new class extends Component {
                 </div>
 
                 <div class="text-center">
-                    <div
-                        class="flex items-center justify-center w-12 h-12 bg-gray-100 dark:bg-gray-700 rounded-lg mx-auto mb-2">
-                        <svg class="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    <div class="flex items-center justify-center w-12 h-12 bg-gray-100 dark:bg-gray-700 rounded-lg mx-auto mb-2">
+                        <svg class="w-6 h-6 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
                     </div>
                     <p class="text-2xl font-bold text-gray-600 dark:text-gray-400">{{ $actividadesPendientes }}</p>
@@ -681,14 +1267,18 @@ new class extends Component {
             </div>
         </div>
 
-        <!-- Plan de Trabajo: Productos y Actividades MEJORADO -->
-        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-md overflow-hidden">
+        <!-- Plan de Trabajo: Productos y Actividades (Master-Detail Pattern) -->
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-md">
+
+            <!-- Header con Buscador -->
             <div class="p-6 border-b border-gray-200 dark:border-gray-700">
-                <div class="flex items-center justify-between">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
                     <div>
-                        <h2 class="text-xl font-bold text-gray-900 dark:text-white">Plan de Trabajo</h2>
-                        <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">Productos, actividades y seguimiento
-                            integrado</p>
+                        <h2 class="text-xl font-bold text-gray-900 dark:text-white">📦 Plan de Trabajo</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                            {{ $carta->productos->count() }} producto(s) ·
+                            {{ $carta->productos->sum(fn($p) => $p->actividades->count()) }} actividad(es) total
+                        </p>
                     </div>
                     <button wire:click="openProductModal"
                             class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
@@ -698,271 +1288,534 @@ new class extends Component {
                         Nuevo Producto
                     </button>
                 </div>
-            </div>
 
-            @if($carta->productos->isEmpty())
-                <!-- Estado vacío -->
-                <div class="p-12 text-center">
-                    <div
-                        class="w-20 h-20 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                <!-- Buscador de Productos -->
+                <div class="relative">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">No hay productos
-                        registrados</h3>
-                    <p class="text-gray-600 dark:text-gray-400 mb-6">Comienza creando el primer producto del
-                        proyecto</p>
-                    <button wire:click="openProductModal"
-                            class="inline-flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    <input
+                        type="text"
+                        wire:model.live.debounce.300ms="searchProductos"
+                        placeholder="Buscar productos por nombre o descripción..."
+                        class="w-full pl-10 pr-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400">
+                    @if($searchProductos)
+                        <button
+                            wire:click="$set('searchProductos', '')"
+                            class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                            <svg class="h-5 w-5 text-gray-400 hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                            </svg>
+                        </button>
+                    @endif
+                </div>
+            </div>
+
+            @if($productos->isEmpty())
+                <!-- Estado vacío -->
+                <div class="p-12 text-center">
+                    @if($searchProductos)
+                        <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                         </svg>
-                        Crear Primer Producto
-                    </button>
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">No se encontraron productos</h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-4">No hay productos que coincidan con "{{ $searchProductos }}"</p>
+                        <button wire:click="$set('searchProductos', '')"
+                                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
+                            Limpiar búsqueda
+                        </button>
+                    @else
+                        <div class="w-20 h-20 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg class="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                            </svg>
+                        </div>
+                        <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">No hay productos registrados</h3>
+                        <p class="text-gray-600 dark:text-gray-400 mb-6">Comienza creando el primer producto del proyecto</p>
+                        <button wire:click="openProductModal"
+                                class="inline-flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                            </svg>
+                            Crear Primer Producto
+                        </button>
+                    @endif
                 </div>
             @else
-                <!-- Lista de productos -->
-                <div id="productosContainer">
-                    @foreach($carta->productos as $producto)
-                        @php
-                            $presupuestoProducto = $producto->actividades->sum('monto');
-                            $gastoProducto = $producto->actividades->sum('gasto_acumulado');
-                            $saldoProducto = $presupuestoProducto - $gastoProducto;
-                            $progresoProducto = $producto->actividades->avg('progreso') ?? 0;
-                            $ejecucionProducto = $presupuestoProducto > 0 ? round(($gastoProducto / $presupuestoProducto) * 100) : 0;
+                <!-- MASTER: Tabla de Productos -->
+                <div class="overflow-x-auto border-b border-gray-200 dark:border-gray-700">
+                    <table class="w-full">
+                        <thead class="bg-gray-50 dark:bg-gray-900">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                                Producto
+                            </th>
+                            <th class="px-6 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                                Presupuesto
+                            </th>
+                            <th class="px-6 py-3 text-right text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                                Ejecutado
+                            </th>
+                            <th class="px-6 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                                Actividades
+                            </th>
+                            <th class="px-6 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                                Progreso
+                            </th>
+                            <th class="px-6 py-3 text-center text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                                Acciones
+                            </th>
+                        </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200 dark:divide-gray-700">
+                        @foreach($productos as $producto)
+                            @php
+                                $presupuestoProducto = $producto->actividades->sum('monto');
+                                $gastoProducto = $producto->actividades->sum('gasto_acumulado');
+                                $saldoProducto = $presupuestoProducto - $gastoProducto;
+                                $progresoProducto = $producto->actividades->avg('progreso') ?? 0;
+                                $excedePresupuesto = $saldoProducto < 0;
+                            @endphp
 
-                            $estadoClass = match($producto->actividades->where('progreso', 100)->count()) {
-                                $producto->actividades->count() => 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-                                0 => 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200',
-                                default => 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                            };
-                        @endphp
+                            <tr
+                                wire:click="$set('selectedProductoIdForDetail', {{ $producto->id }})"
+                                class="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors {{ $selectedProductoIdForDetail == $producto->id ? 'bg-blue-50 dark:bg-blue-900/20' : '' }}">
 
-                        <div class="border-b border-gray-200 dark:border-gray-700 last:border-b-0">
-                            <!-- Cabecera del producto -->
-                            <div class="p-6 hover:bg-gray-500 dark:hover:bg-gray-750 transition-colors">
-                                <div class="flex items-start justify-between mb-4">
-                                    <div class="flex-1">
-                                        <div class="flex items-center gap-3 mb-3">
-                                            <button
-                                                x-data="{ open: false }"
-                                                @click="open = !open; $refs.content{{ $producto->id }}.classList.toggle('hidden')"
-                                                class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors">
-                                                <svg
-                                                    class="w-5 h-5 text-gray-600 dark:text-gray-400 transition-transform"
-                                                    :class="{ 'rotate-180': open }"
-                                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round"
-                                                          stroke-width="2" d="M19 9l-7 7-7-7"/>
-                                                </svg>
-                                            </button>
-                                            <h3 class="text-lg font-bold text-gray-900 dark:text-white">{{ $producto->nombre }}</h3>
-                                            <span class="px-3 py-1 rounded-full text-xs font-medium {{ $estadoClass }}">
-                                        @if($producto->actividades->where('progreso', 100)->count() == $producto->actividades->count())
-                                                    Finalizado
-                                                @elseif($producto->actividades->where('progreso', '>', 0)->count() > 0)
-                                                    En Progreso
-                                                @else
-                                                    Pendiente
-                                                @endif
-                                    </span>
-                                            <span class="text-sm text-gray-500 dark:text-gray-400">
-                                        {{ $producto->actividades->count() }} actividad(es)
-                                    </span>
+                                <!-- Producto -->
+                                <td class="px-6 py-4">
+                                    <div class="flex items-center gap-3">
+                                        <div class="flex-shrink-0">
+                                            <div
+                                                class="w-1 h-12 rounded-full transition-colors {{ $selectedProductoIdForDetail == $producto->id ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600' }}">
+                                            </div>
                                         </div>
-                                        <p class="text-sm text-gray-600 dark:text-gray-400 ml-9">{{ $producto->descripcion }}</p>
 
-                                        <!-- Métricas del producto -->
-                                        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4 ml-9">
-                                            <div class="bg-gray-500 dark:bg-gray-700 rounded-lg p-3">
-                                                <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Presupuesto</p>
-                                                <p class="text-sm font-bold text-gray-900 dark:text-white">
-                                                    ${{ number_format($presupuestoProducto, 2) }}
-                                                </p>
+                                        <div class="flex-1 min-w-0">
+                                            <div class="flex items-center gap-2 mb-1">
+                                                <h4 class="font-semibold text-gray-900 dark:text-white">
+                                                    {{ $producto->nombre }}
+                                                </h4>
+                                                @if($excedePresupuesto)
+                                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">
+                                                    ⚠️ Excedido
+                                                </span>
+                                                @endif
                                             </div>
-                                            <div class="bg-gray-500 dark:bg-gray-700 rounded-lg p-3">
-                                                <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Ejecutado</p>
-                                                <p class="text-sm font-bold text-green-600 dark:text-green-400">
-                                                    ${{ number_format($gastoProducto, 2) }}
-                                                </p>
-                                                <p class="text-xs text-gray-500 dark:text-gray-400">{{ $ejecucionProducto }}
-                                                    %</p>
+                                            <p class="text-sm text-gray-600 dark:text-gray-400 line-clamp-1">
+                                                {{ $producto->descripcion }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </td>
+
+                                <!-- Presupuesto -->
+                                <td class="px-6 py-4 text-right">
+                                    <div class="text-sm font-semibold text-gray-900 dark:text-white">
+                                        ${{ number_format($presupuestoProducto, 2) }}
+                                    </div>
+                                </td>
+
+                                <!-- Ejecutado -->
+                                <td class="px-6 py-4 text-right">
+                                    <div class="text-sm font-semibold text-green-600 dark:text-green-400">
+                                        ${{ number_format($gastoProducto, 2) }}
+                                    </div>
+                                    <div class="text-xs text-gray-500 dark:text-gray-400">
+                                        {{ $presupuestoProducto > 0 ? round(($gastoProducto / $presupuestoProducto) * 100) : 0 }}%
+                                    </div>
+                                </td>
+
+                                <!-- Actividades -->
+                                <td class="px-6 py-4 text-center">
+                                <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 text-sm font-semibold text-gray-900 dark:text-white">
+                                    {{ $producto->actividades->count() }}
+                                </span>
+                                </td>
+
+                                <!-- Progreso -->
+                                <td class="px-6 py-4">
+                                    <div class="flex items-center justify-center gap-2">
+                                        <div class="flex-1 max-w-20 bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                            <div class="bg-purple-600 h-2 rounded-full" style="width: {{ round($progresoProducto) }}%"></div>
+                                        </div>
+                                        <span class="text-sm font-bold text-purple-600 dark:text-purple-400 min-w-[2.5rem]">
+                                        {{ round($progresoProducto) }}%
+                                    </span>
+                                    </div>
+                                </td>
+
+                                <!-- Acciones -->
+                                <td class="px-6 py-4" wire:click.stop>
+                                    <div class="flex items-center justify-center gap-2">
+                                        @can('update', $producto)
+                                            <a href="{{ route('productos.edit', $producto) }}"
+                                               wire:navigate
+                                               class="p-2 text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+                                               title="Editar">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                                </svg>
+                                            </a>
+                                        @endcan
+                                        <button wire:click.stop="openActivityModal({{ $producto->id }})"
+                                                class="p-2 text-green-600 hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20 rounded-lg transition-colors"
+                                                title="Nueva actividad">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        @endforeach
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Paginación de Productos -->
+                <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+                    {{ $productos->links() }}
+                </div>
+
+                <!-- DETAIL: Panel de Actividades del Producto Seleccionado -->
+                @if($selectedProductoIdForDetail && $productoSeleccionadoObj)
+                    <div id="detail-panel"
+                         wire:key="detail-{{ $selectedProductoIdForDetail }}"
+                         class="border-t-4 border-blue-600 dark:border-blue-500 bg-gradient-to-b from-blue-50/50 to-white dark:from-blue-900/10 dark:to-gray-800">
+
+                        <div class="p-6">
+                            <!-- Header del producto (nombre, botón cerrar y nueva actividad) -->
+                            <div class="flex items-start justify-between mb-4">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-3 mb-2">
+                                        <h3 class="text-2xl font-bold text-gray-900 dark:text-white">
+                                            {{ $productoSeleccionadoObj->nombre }}
+                                        </h3>
+                                        <button wire:click="$set('selectedProductoIdForDetail', null)"
+                                                class="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <p class="text-gray-600 dark:text-gray-400">{{ $productoSeleccionadoObj->descripcion }}</p>
+                                </div>
+
+                                <button wire:click="openActivityModal({{ $productoSeleccionadoObj->id }})"
+                                        class="ml-4 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors flex-shrink-0">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    Nueva Actividad
+                                </button>
+                            </div>
+
+                            <!-- Panel de Métricas (FUERA DEL FLEX) -->
+                            <div class="mb-6">
+                                @php
+                                    $presupuestoReferencial = floatval($productoSeleccionadoObj->presupuesto ?? 0);
+                                    $presupuestoReal = $productoSeleccionadoObj->actividades->sum('monto');
+                                    $gastoProducto = $productoSeleccionadoObj->actividades->sum('gasto_acumulado');
+                                    $saldoProducto = $presupuestoReal - $gastoProducto;
+                                    $progresoProducto = $productoSeleccionadoObj->actividades->avg('progreso') ?? 0;
+                                    $diferenciaPresupuestos = $presupuestoReal - $presupuestoReferencial;
+                                    $excedePptoReferencial = $diferenciaPresupuestos > 0;
+                                @endphp
+
+                                    <!-- Panel Compacto de Resumen -->
+                                <div class="bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900 rounded-xl border-2 border-slate-200 dark:border-slate-700 p-6 shadow-sm">
+
+                                    <!-- Fila 1: Presupuestos -->
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 pb-4 border-b border-slate-300 dark:border-slate-600">
+                                        <!-- Presupuesto Referencial -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-10 h-10 bg-indigo-100 dark:bg-indigo-900/30 rounded-lg mb-2">
+                                                <svg class="w-5 h-5 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                                </svg>
                                             </div>
-                                            <div class="bg-gray-500 dark:bg-gray-700 rounded-lg p-3">
-                                                <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Saldo</p>
-                                                <p class="text-sm font-bold text-blue-600 dark:text-blue-400">
-                                                    ${{ number_format($saldoProducto, 2) }}
-                                                </p>
+                                            <p class="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Presupuesto Referencial</p>
+                                            <p class="text-xl font-bold text-indigo-600 dark:text-indigo-400">
+                                                ${{ number_format($presupuestoReferencial, 0) }}
+                                            </p>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Producto original</p>
+                                        </div>
+
+                                        <!-- Presupuesto Real -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-lg mb-2">
+                                                <svg class="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                                                </svg>
                                             </div>
-                                            <div class="bg-gray-500 dark:bg-gray-700 rounded-lg p-3">
-                                                <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Periodo</p>
-                                                <p class="text-xs font-medium text-gray-700 dark:text-gray-300">
-                                                    {{ \Carbon\Carbon::parse($producto->fecha_inicio)->format('d/m/Y') }}
-                                                    -
-                                                    {{ \Carbon\Carbon::parse($producto->fecha_fin)->format('d/m/Y') }}
+                                            <p class="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Presupuesto Real</p>
+                                            <p class="text-xl font-bold text-blue-600 dark:text-blue-400">
+                                                ${{ number_format($presupuestoReal, 0) }}
+                                            </p>
+                                            @if($excedePptoReferencial)
+                                                <p class="text-xs text-red-600 dark:text-red-400 font-semibold mt-1">
+                                                    ⚠️ +${{ number_format($diferenciaPresupuestos, 0) }}
                                                 </p>
-                                            </div>
-                                            <div class="bg-gray-500 dark:bg-gray-700 rounded-lg p-3">
-                                                <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Progreso</p>
-                                                <p class="text-sm font-bold text-purple-600 dark:text-purple-400">
-                                                    {{ round($progresoProducto) }}%
+                                            @elseif($diferenciaPresupuestos < 0)
+                                                <p class="text-xs text-green-600 dark:text-green-400 font-semibold mt-1">
+                                                    ✓ -${{ number_format(abs($diferenciaPresupuestos), 0) }}
                                                 </p>
-                                                <div class="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mt-1">
-                                                    <div class="bg-purple-600 dark:bg-purple-400 h-2 rounded-full"
-                                                         style="width: {{ round($progresoProducto) }}%"></div>
-                                                </div>
+                                            @else
+                                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Suma de actividades</p>
+                                            @endif
+                                        </div>
+
+                                        <!-- Ejecutado -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-10 h-10 bg-green-100 dark:bg-green-900/30 rounded-lg mb-2">
+                                                <svg class="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                </svg>
                                             </div>
+                                            <p class="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Ejecutado</p>
+                                            <p class="text-xl font-bold text-green-600 dark:text-green-400">
+                                                ${{ number_format($gastoProducto, 0) }}
+                                            </p>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                                                {{ $presupuestoReal > 0 ? round(($gastoProducto / $presupuestoReal) * 100) : 0 }}% del total
+                                            </p>
                                         </div>
                                     </div>
 
-                                    <button wire:click="openActivityModal({{ $producto->id }})"
-                                            class="ml-4 inline-flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                  d="M12 4v16m8-8H4"/>
-                                        </svg>
-                                        Nueva Actividad
-                                    </button>
-                                </div>
-                            </div>
-
-                            <!-- Actividades del producto (acordeón) -->
-                            <div x-ref="content{{ $producto->id }}" class="hidden">
-                                <div class="px-6 pb-6 bg-gray-800 dark:bg-gray-700">
-                                    @if($producto->actividades->isEmpty())
-                                        <div class="text-center py-8">
-                                            <p class="text-gray-500 dark:text-gray-400 mb-4">No hay actividades
-                                                registradas</p>
-                                            <button wire:click="openActivityModal({{ $producto->id }})"
-                                                    class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor"
-                                                     viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round"
-                                                          stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    <!-- Fila 2: Fechas y Métricas -->
+                                    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                                        <!-- Fecha Inicio -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-8 h-8 bg-purple-100 dark:bg-purple-900/30 rounded-lg mb-2">
+                                                <svg class="w-4 h-4 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                                 </svg>
-                                                Crear Primera Actividad
-                                            </button>
+                                            </div>
+                                            <p class="text-xs text-slate-600 dark:text-slate-400 mb-1">Inicio</p>
+                                            <p class="text-sm font-bold text-slate-900 dark:text-white">
+                                                {{ $productoSeleccionadoObj->fecha_inicio ? \Carbon\Carbon::parse($productoSeleccionadoObj->fecha_inicio)->format('d/m/Y') : '-' }}
+                                            </p>
                                         </div>
-                                    @else
-                                        <div class="space-y-3">
-                                            @foreach($producto->actividades as $actividad)
-                                                @php
-                                                    $saldoActividad = $actividad->monto - $actividad->gasto_acumulado;
-                                                    $ejecucionActividad = $actividad->monto > 0 ? round(($actividad->gasto_acumulado / $actividad->monto) * 100) : 0;
 
-                                                    $estadoActividadClass = match($actividad->estado) {
-                                                        'finalizado' => 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
-                                                        'en_curso' => 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
-                                                        'atrasado' => 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-                                                        default => 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'
-                                                    };
-                                                @endphp
+                                        <!-- Fecha Fin -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-8 h-8 bg-purple-100 dark:bg-purple-900/30 rounded-lg mb-2">
+                                                <svg class="w-4 h-4 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                                </svg>
+                                            </div>
+                                            <p class="text-xs text-slate-600 dark:text-slate-400 mb-1">Fin</p>
+                                            <p class="text-sm font-bold text-slate-900 dark:text-white">
+                                                {{ $productoSeleccionadoObj->fecha_fin ? \Carbon\Carbon::parse($productoSeleccionadoObj->fecha_fin)->format('d/m/Y') : '-' }}
+                                            </p>
+                                        </div>
 
-                                                <div
-                                                    class="bg-white dark:bg-gray-800 rounded-lg p-5 shadow-sm border border-gray-200 dark:border-gray-700">
-                                                    <div class="flex items-start justify-between">
-                                                        <div class="flex-1">
-                                                            <div class="flex items-center gap-2 mb-3">
-                                                        <span
-                                                            class="text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
-                                                            #{{ $actividad->id }}
-                                                        </span>
-                                                                <h4 class="font-semibold text-gray-900 dark:text-white">{{ $actividad->nombre }}</h4>
-                                                                <span
-                                                                    class="px-2 py-0.5 rounded-full text-xs font-medium {{ $estadoActividadClass }}">
-                                                            {{ ucfirst($actividad->estado) }}
-                                                        </span>
-                                                            </div>
+                                        <!-- Saldo -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-8 h-8 {{ $saldoProducto < 0 ? 'bg-red-100 dark:bg-red-900/30' : 'bg-cyan-100 dark:bg-cyan-900/30' }} rounded-lg mb-2">
+                                                <svg class="w-4 h-4 {{ $saldoProducto < 0 ? 'text-red-600 dark:text-red-400' : 'text-cyan-600 dark:text-cyan-400' }}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                </svg>
+                                            </div>
+                                            <p class="text-xs text-slate-600 dark:text-slate-400 mb-1">Saldo</p>
+                                            <p class="text-sm font-bold {{ $saldoProducto < 0 ? 'text-red-600 dark:text-red-400' : 'text-cyan-600 dark:text-cyan-400' }}">
+                                                ${{ number_format(abs($saldoProducto), 0) }}
+                                            </p>
+                                        </div>
 
-                                                            <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">{{ $actividad->descripcion }}</p>
+                                        <!-- Actividades -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-8 h-8 bg-orange-100 dark:bg-orange-900/30 rounded-lg mb-2">
+                                                <svg class="w-4 h-4 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                                                </svg>
+                                            </div>
+                                            <p class="text-xs text-slate-600 dark:text-slate-400 mb-1">Total</p>
+                                            <p class="text-sm font-bold text-slate-900 dark:text-white">
+                                                {{ $productoSeleccionadoObj->actividades->count() }}
+                                            </p>
+                                        </div>
 
-                                                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                                                <div>
-                                                                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                                                                        Línea Presupuestaria</p>
-                                                                    <p class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ $actividad->linea_presupuestaria }}</p>
-                                                                </div>
-                                                                <div>
-                                                                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                                                                        Presupuesto</p>
-                                                                    <p class="text-sm font-semibold text-gray-900 dark:text-white">
-                                                                        ${{ number_format($actividad->monto, 2) }}
-                                                                    </p>
-                                                                </div>
-                                                                <div>
-                                                                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                                                                        Ejecutado</p>
-                                                                    <p class="text-sm font-semibold text-green-600 dark:text-green-400">
-                                                                        ${{ number_format($actividad->gasto_acumulado, 2) }}
-                                                                    </p>
-                                                                    <p class="text-xs text-gray-500 dark:text-gray-400">{{ $ejecucionActividad }}
-                                                                        %</p>
-                                                                </div>
-                                                                <div>
-                                                                    <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">
-                                                                        Saldo</p>
-                                                                    <p class="text-sm font-semibold {{ $saldoActividad < 0 ? 'text-red-600 dark:text-red-400' : 'text-blue-600 dark:text-blue-400' }}">
-                                                                        ${{ number_format($saldoActividad, 2) }}
-                                                                    </p>
-                                                                </div>
-                                                            </div>
+                                        <!-- Progreso -->
+                                        <div class="text-center">
+                                            <div class="inline-flex items-center justify-center w-8 h-8 bg-purple-100 dark:bg-purple-900/30 rounded-lg mb-2">
+                                                <svg class="w-4 h-4 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                                                </svg>
+                                            </div>
+                                            <p class="text-xs text-slate-600 dark:text-slate-400 mb-1">Progreso</p>
+                                            <p class="text-sm font-bold text-purple-600 dark:text-purple-400">
+                                                {{ round($progresoProducto) }}%
+                                            </p>
+                                        </div>
+                                    </div>
 
-                                                            <div class="mt-4">
-                                                                <div class="flex items-center justify-between mb-2">
-                                                                    <span
-                                                                        class="text-xs font-medium text-gray-600 dark:text-gray-400">Progreso Técnico</span>
-                                                                    <span
-                                                                        class="text-sm font-bold text-purple-600 dark:text-purple-400">
-                                                                {{ $actividad->progreso }}%
-                                                            </span>
-                                                                </div>
-                                                                <div
-                                                                    class="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2">
-                                                                    <div
-                                                                        class="bg-purple-600 dark:bg-purple-400 h-2 rounded-full transition-all"
-                                                                        style="width: {{ $actividad->progreso }}%"></div>
-                                                                </div>
-                                                            </div>
-
-                                                            @if($saldoActividad < 0)
-                                                                <div
-                                                                    class="mt-3 bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 p-3 rounded">
-                                                                    <p class="text-sm font-semibold text-red-800 dark:text-red-200">
-                                                                        ⚠️ Presupuesto excedido en
-                                                                        ${{ number_format(abs($saldoActividad), 2) }}
-                                                                    </p>
-                                                                </div>
-                                                            @endif
-                                                        </div>
-
-                                                        <div class="flex gap-2">
-                                                            <button wire:click="openSeguimientoModal({{ $actividad->id }})"
-                                                                    class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                                                </svg>
-                                                                Registrar Seguimiento
-                                                            </button>
-
-                                                            <a href="{{ route('actividades.historial', $actividad->id) }}"
-                                                               class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm flex items-center gap-2">
-                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                                                </svg>
-                                                                Ver Historial
-                                                            </a>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            @endforeach
+                                    <!-- Alerta si excede presupuesto -->
+                                    @if($excedePptoReferencial && $diferenciaPresupuestos > 0)
+                                        <div class="mt-4 pt-4 border-t border-slate-300 dark:border-slate-600">
+                                            <div class="flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
+                                                <svg class="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                                                </svg>
+                                                <p class="text-xs font-semibold text-red-800 dark:text-red-200">
+                                                    Las actividades exceden el presupuesto referencial del producto por <strong>${{ number_format($diferenciaPresupuestos, 2) }}</strong>
+                                                </p>
+                                            </div>
                                         </div>
                                     @endif
                                 </div>
                             </div>
+
+                            <!-- Buscador de Actividades -->
+                            <div class="mb-6">
+                                <div class="relative">
+                                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                        <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                        </svg>
+                                    </div>
+                                    <input
+                                        type="text"
+                                        wire:model.live.debounce.300ms="searchActividades"
+                                        placeholder="Buscar actividades..."
+                                        class="w-full pl-10 pr-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white">
+                                    @if($searchActividades)
+                                        <button
+                                            wire:click="$set('searchActividades', '')"
+                                            class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                                            <svg class="h-5 w-5 text-gray-400 hover:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                            </svg>
+                                        </button>
+                                    @endif
+                                </div>
+                            </div>
+
+                            <!-- Grid de Actividades -->
+                            @if($actividadesProductoSeleccionado && $actividadesProductoSeleccionado->isEmpty())
+                                <div class="text-center py-12 bg-white dark:bg-gray-800 rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600">
+                                    @if($searchActividades)
+                                        <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                        </svg>
+                                        <h4 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">No se encontraron actividades</h4>
+                                        <p class="text-gray-600 dark:text-gray-400 mb-4">No hay actividades que coincidan con "{{ $searchActividades }}"</p>
+                                        <button wire:click="$set('searchActividades', '')"
+                                                class="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors">
+                                            Limpiar búsqueda
+                                        </button>
+                                    @else
+                                        <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                                        </svg>
+                                        <h4 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Sin actividades</h4>
+                                        <p class="text-gray-600 dark:text-gray-400 mb-4">Este producto aún no tiene actividades registradas</p>
+                                        <button wire:click="openActivityModal({{ $productoSeleccionadoObj->id }})"
+                                                class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                            </svg>
+                                            Crear Primera Actividad
+                                        </button>
+                                    @endif
+                                </div>
+                            @elseif($actividadesProductoSeleccionado)
+                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                                    @foreach($actividadesProductoSeleccionado as $actividad)
+                                        @php
+                                            $saldoActividad = $actividad->monto - $actividad->gasto_acumulado;
+                                            $estadoClass = match($actividad->estado) {
+                                                'finalizado' => 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
+                                                'en_curso' => 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
+                                                'atrasado' => 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400',
+                                                default => 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                                            };
+                                        @endphp
+
+                                        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-lg transition-shadow">
+                                            <!-- Header -->
+                                            <div class="flex items-start justify-between mb-3">
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="flex items-center gap-2 mb-2">
+                                                <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
+                                                    #{{ $actividad->id }}
+                                                </span>
+                                                        <span class="px-2 py-0.5 rounded-full text-xs font-medium {{ $estadoClass }}">
+                                                    {{ ucfirst($actividad->estado) }}
+                                                </span>
+                                                    </div>
+                                                    <h5 class="font-semibold text-gray-900 dark:text-white text-sm line-clamp-2 mb-2">
+                                                        {{ $actividad->nombre }}
+                                                    </h5>
+                                                    <p class="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mb-3">
+                                                        {{ $actividad->descripcion }}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <!-- Métricas -->
+                                            <div class="grid grid-cols-2 gap-2 mb-3">
+                                                <div class="bg-blue-50 dark:bg-blue-900/20 rounded p-2">
+                                                    <p class="text-xs text-gray-600 dark:text-gray-400">Presupuesto</p>
+                                                    <p class="text-sm font-bold text-gray-900 dark:text-white">${{ number_format($actividad->monto, 0) }}</p>
+                                                </div>
+                                                <div class="bg-green-50 dark:bg-green-900/20 rounded p-2">
+                                                    <p class="text-xs text-gray-600 dark:text-gray-400">Ejecutado</p>
+                                                    <p class="text-sm font-bold text-green-600 dark:text-green-400">${{ number_format($actividad->gasto_acumulado, 0) }}</p>
+                                                </div>
+                                            </div>
+
+                                            <!-- Progreso -->
+                                            <div class="mb-3">
+                                                <div class="flex items-center justify-between text-xs mb-1">
+                                                    <span class="text-gray-600 dark:text-gray-400">Progreso</span>
+                                                    <span class="font-bold text-purple-600 dark:text-purple-400">{{ $actividad->progreso }}%</span>
+                                                </div>
+                                                <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                                    <div class="bg-purple-600 h-2 rounded-full" style="width: {{ $actividad->progreso }}%"></div>
+                                                </div>
+                                            </div>
+
+                                            @if($saldoActividad < 0)
+                                                <div class="mb-3 bg-red-50 dark:bg-red-900/20 border-l-2 border-red-500 p-2 rounded">
+                                                    <p class="text-xs font-semibold text-red-800 dark:text-red-300">
+                                                        ⚠️ Excedido ${{ number_format(abs($saldoActividad), 0) }}
+                                                    </p>
+                                                </div>
+                                            @endif
+
+                                            <!-- Botones -->
+                                            <div class="flex gap-2">
+                                                <a href="{{ route('actividades.seguimiento', $actividad->id) }}"
+                                                   class="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors text-center">
+                                                    📊 Seguimiento
+                                                </a>
+                                                <a href="{{ route('actividades.historial', $actividad->id) }}"
+                                                   wire:navigate
+                                                   class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs font-medium text-center transition-colors">
+                                                    📜 Historial
+                                                </a>
+                                            </div>
+                                        </div>
+                                    @endforeach
+                                </div>
+
+                                <!-- Paginación de Actividades -->
+                                <div class="border-t border-gray-200 dark:border-gray-700 pt-4">
+                                    {{ $actividadesProductoSeleccionado->links() }}
+                                </div>
+                            @endif
                         </div>
-                    @endforeach
+                    </div>
+                @endif
+
+                <!-- Footer con ayuda -->
+                <div class="px-6 py-4 bg-gray-50 dark:bg-gray-900 text-center">
+                    <p class="text-sm text-gray-600 dark:text-gray-400">
+                        💡 <span class="font-medium">Haz clic en cualquier producto</span> para ver sus actividades detalladas
+                    </p>
                 </div>
             @endif
         </div>
@@ -1603,6 +2456,284 @@ new class extends Component {
             @endif
         </div>
     </div>
+
+    <!-- Modal de Advertencias Unificado (Montos + Fechas) -->
+    <div x-data="{ show: @entangle('showAdvertenciasModal') }"
+         x-show="show"
+         x-cloak
+         class="fixed inset-0 bg-black bg-opacity-50 z-[60] flex items-center justify-center p-4"
+         @click.self="$wire.cancelarCreacionConAdvertencias()">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto" @click.stop>
+            <!-- Header -->
+            <div class="sticky top-0 p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-yellow-50 to-red-50 dark:from-yellow-900/20 dark:to-red-900/20 z-10">
+                <div class="flex items-start gap-4">
+                    <div class="flex-shrink-0">
+                        <svg class="w-12 h-12 text-yellow-600 dark:text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                        </svg>
+                    </div>
+                    <div class="flex-1">
+                        <h2 class="text-xl font-bold text-gray-900 dark:text-white">
+                            ⚠️ Advertencias Detectadas
+                        </h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                            Se encontraron inconsistencias que requieren su atención
+                        </p>
+                    </div>
+                    <button wire:click="cancelarCreacionConAdvertencias"
+                            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Contenido -->
+            <div class="p-6 space-y-6">
+
+                <!-- ═══════════════════════════════════════════ -->
+                <!-- ADVERTENCIAS DE MONTOS -->
+                <!-- ═══════════════════════════════════════════ -->
+                @if(!empty($advertenciasMontos))
+                    <div class="space-y-4">
+                        <h3 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            💰 Advertencias de Presupuesto
+                        </h3>
+
+                        <!-- Advertencia Producto -->
+                        @if(isset($advertenciasMontos['producto']))
+                            <div class="bg-orange-50 dark:bg-orange-900/20 border-l-4 border-orange-500 rounded-lg p-4">
+                                <div class="flex items-start gap-3 mb-3">
+                                    <svg class="w-6 h-6 text-orange-600 dark:text-orange-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                                    </svg>
+                                    <div class="flex-1">
+                                        <h4 class="text-base font-bold text-orange-900 dark:text-orange-200 mb-2">
+                                            📦 PRODUCTO: {{ $advertenciasMontos['producto']['nombre'] }}
+                                        </h4>
+
+                                        <div class="bg-white dark:bg-gray-800 rounded p-3 mb-3">
+                                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Presupuesto Asignado</p>
+                                                    <p class="font-bold text-gray-900 dark:text-white">
+                                                        ${{ number_format($advertenciasMontos['producto']['presupuesto_asignado'], 2) }}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Suma Actual</p>
+                                                    <p class="font-bold text-blue-600 dark:text-blue-400">
+                                                        ${{ number_format($advertenciasMontos['producto']['suma_actual'], 2) }}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Nueva Actividad</p>
+                                                    <p class="font-bold text-purple-600 dark:text-purple-400">
+                                                        + ${{ number_format($advertenciasMontos['producto']['monto_nueva'], 2) }}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Nuevo Total</p>
+                                                    <p class="font-bold text-orange-600 dark:text-orange-400">
+                                                        ${{ number_format($advertenciasMontos['producto']['nuevo_total'], 2) }}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="bg-orange-100 dark:bg-orange-900/30 rounded p-3">
+                                            <p class="text-sm font-bold text-orange-900 dark:text-orange-200">
+                                                ⚠️ EXCEDE POR: ${{ number_format($advertenciasMontos['producto']['diferencia'], 2) }}
+                                                ({{ $advertenciasMontos['producto']['porcentaje_exceso'] }}% sobre presupuesto)
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+
+                        <!-- Advertencia Carta -->
+                        @if(isset($advertenciasMontos['carta']))
+                            <div class="bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 rounded-lg p-4">
+                                <div class="flex items-start gap-3 mb-3">
+                                    <svg class="w-6 h-6 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                    </svg>
+                                    <div class="flex-1">
+                                        <h4 class="text-base font-bold text-red-900 dark:text-red-200 mb-2">
+                                            📋 CARTA DOCUMENTO: {{ $carta->codigo }}
+                                        </h4>
+
+                                        <div class="bg-white dark:bg-gray-800 rounded p-3 mb-3">
+                                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Presupuesto Referencial</p>
+                                                    <p class="font-bold text-gray-900 dark:text-white">
+                                                        ${{ number_format($advertenciasMontos['carta']['presupuesto_referencial'], 2) }}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Suma Total Actual</p>
+                                                    <p class="font-bold text-blue-600 dark:text-blue-400">
+                                                        ${{ number_format($advertenciasMontos['carta']['suma_actual'], 2) }}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Nueva Actividad</p>
+                                                    <p class="font-bold text-purple-600 dark:text-purple-400">
+                                                        + ${{ number_format($advertenciasMontos['carta']['monto_nueva'], 2) }}
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <p class="text-gray-600 dark:text-gray-400">Nuevo Total</p>
+                                                    <p class="font-bold text-red-600 dark:text-red-400">
+                                                        ${{ number_format($advertenciasMontos['carta']['nuevo_total'], 2) }}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="bg-red-100 dark:bg-red-900/30 rounded p-3">
+                                            <p class="text-sm font-bold text-red-900 dark:text-red-200">
+                                                🔴 EXCEDE POR: ${{ number_format($advertenciasMontos['carta']['diferencia'], 2) }}
+                                                ({{ $advertenciasMontos['carta']['porcentaje_exceso'] }}% sobre presupuesto referencial)
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+                    </div>
+                @endif
+
+                <!-- ═══════════════════════════════════════════ -->
+                <!-- ADVERTENCIAS DE FECHAS -->
+                <!-- ═══════════════════════════════════════════ -->
+                @if(!empty($advertenciasFechas))
+                    <div class="space-y-4">
+                        <h3 class="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                            <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            📅 Advertencias de Fechas
+                        </h3>
+
+                        <!-- Advertencia Producto -->
+                        @if(isset($advertenciasFechas['producto']))
+                            <div class="bg-orange-50 dark:bg-orange-900/20 border-l-4 border-orange-500 rounded-lg p-4">
+                                <div class="flex items-start gap-3">
+                                    <svg class="w-6 h-6 text-orange-600 dark:text-orange-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+                                    </svg>
+                                    <div class="flex-1">
+                                        <h4 class="text-base font-bold text-orange-900 dark:text-orange-200 mb-2">
+                                            📦 PRODUCTO: {{ $advertenciasFechas['producto']['nombre'] }}
+                                        </h4>
+                                        <div class="bg-white dark:bg-gray-800 rounded p-3 mb-2">
+                                            <p class="text-sm text-gray-700 dark:text-gray-300">
+                                                <strong>Rango válido:</strong>
+                                                {{ $advertenciasFechas['producto']['fecha_inicio'] }}
+                                                →
+                                                {{ $advertenciasFechas['producto']['fecha_fin'] }}
+                                            </p>
+                                        </div>
+                                        <ul class="space-y-2 text-sm text-orange-800 dark:text-orange-200">
+                                            @foreach($advertenciasFechas['producto']['problemas'] as $problema)
+                                                <li class="flex items-start gap-2">
+                                                    <span class="text-orange-600 dark:text-orange-400 mt-0.5">•</span>
+                                                    <span>{!! $problema !!}</span>
+                                                </li>
+                                            @endforeach
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+
+                        <!-- Advertencia Carta -->
+                        @if(isset($advertenciasFechas['carta']))
+                            <div class="bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 rounded-lg p-4">
+                                <div class="flex items-start gap-3">
+                                    <svg class="w-6 h-6 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                    </svg>
+                                    <div class="flex-1">
+                                        <h4 class="text-base font-bold text-red-900 dark:text-red-200 mb-2">
+                                            📋 CARTA DOCUMENTO: {{ $advertenciasFechas['carta']['codigo'] }}
+                                        </h4>
+                                        <div class="bg-white dark:bg-gray-800 rounded p-3 mb-2">
+                                            <p class="text-sm text-gray-700 dark:text-gray-300">
+                                                <strong>Rango válido:</strong>
+                                                {{ $advertenciasFechas['carta']['fecha_inicio'] }}
+                                                →
+                                                {{ $advertenciasFechas['carta']['fecha_fin'] }}
+                                            </p>
+                                        </div>
+                                        <ul class="space-y-2 text-sm text-red-800 dark:text-red-200">
+                                            @foreach($advertenciasFechas['carta']['problemas'] as $problema)
+                                                <li class="flex items-start gap-2">
+                                                    <span class="text-red-600 dark:text-red-400 mt-0.5">•</span>
+                                                    <span>{!! $problema !!}</span>
+                                                </li>
+                                            @endforeach
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        @endif
+                    </div>
+                @endif
+
+                <!-- Recomendación -->
+                <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                    <div class="flex items-start gap-3">
+                        <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
+                        </svg>
+                        <div class="flex-1">
+                            <h4 class="text-sm font-semibold text-blue-900 dark:text-blue-200 mb-1">
+                                💡 Recomendación
+                            </h4>
+                            <p class="text-sm text-blue-800 dark:text-blue-300">
+                                Se recomienda <strong>corregir los valores</strong> antes de continuar. Si decide proceder de todas formas,
+                                el sistema registrará estas inconsistencias y podrían requerir justificación posterior.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Footer con Botones -->
+            <div class="sticky bottom-0 px-6 py-4 bg-gray-50 dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 rounded-b-xl">
+                <div class="flex gap-3">
+                    <button
+                        wire:click="cancelarCreacionConAdvertencias"
+                        type="button"
+                        class="flex-1 px-4 py-3 border-2 border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 font-semibold hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                        </svg>
+                        Cancelar y Corregir
+                    </button>
+                    <button
+                        wire:click="confirmarCreacionConAdvertencias"
+                        type="button"
+                        class="flex-1 px-4 py-3 bg-gradient-to-r from-yellow-600 to-red-600 hover:from-yellow-700 hover:to-red-700 text-white rounded-lg font-semibold transition-all flex items-center justify-center gap-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        Continuar de Todas Formas
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <style>
         [x-cloak] {
             display: none !important;
