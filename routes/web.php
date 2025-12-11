@@ -31,6 +31,18 @@ Route::get('/dashboard', [DashboardController::class, 'index'])
     ->middleware(['auth', 'verified'])
     ->name('dashboard');
 
+Route::middleware(['auth', 'role:Administrador|Finanzas'])->group(function () {
+    Volt::route('/desembolsos', 'desembolsos.index')->name('desembolsos.index');
+});
+
+Route::middleware(['auth', 'role:Administrador|Coordinador'])->group(function () {
+    Volt::route('/productos-aprobacion', 'productos.aprobacion')->name('productos.aprobacion');
+});
+
+Volt::route('actividades/cancelaciones-pendientes', 'actividades.cancelaciones-pendientes')
+    ->name('actividades.cancelaciones-pendientes')
+    ->middleware(['auth', 'role:Coordinador|Administrador']);
+
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::redirect('settings', 'settings/profile');
 
@@ -110,5 +122,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Volt::route('productos/{producto}/edit', 'productos.edit')
         ->middleware(['auth', 'verified'])
         ->name('productos.edit');
+
+
 
 });

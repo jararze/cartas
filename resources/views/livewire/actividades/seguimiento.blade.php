@@ -43,12 +43,24 @@ new class extends Component {
     public $etiquetas = [];
     public $nueva_etiqueta = '';
 
+    // Revisiones
+    public $showModalRevision = false;
+    public $showModalRespuesta = false;
+    public $seguimientoParaRevisar = null;
+    public $revisionParaResponder = null;
+    public $tipoRevision = 'observacion';
+    public $comentarioRevision = '';
+    public $respuestaRevision = '';
+
+    public bool $showCancelacionModal = false;
+    public string $motivoCancelacion = '';
+
     public function mount(Actividad $actividad): void
     {
         $this->actividad = $actividad->load(['producto.carta', 'responsable']);
         $this->producto = $this->actividad->producto;
         $this->carta = $this->producto->carta;
-        $this->seguimientos = $actividad->seguimientos()->with('registradoPor')->get();
+        $this->seguimientos = $actividad->seguimientos()->with(['registradoPor', 'revisiones.revisor', 'revisiones.respondidoPor'])->get();
 
         // Pre-cargar valores actuales
         $this->progreso = (float) $actividad->progreso;
@@ -200,6 +212,119 @@ new class extends Component {
     {
         return redirect()->route('cartas.show', $this->carta->id);
     }
+
+    public function abrirModalCancelacion(): void
+    {
+        $this->motivoCancelacion = '';
+        $this->showCancelacionModal = true;
+    }
+
+    public function solicitarCancelacion(): void
+    {
+        $this->validate([
+            'motivoCancelacion' => 'required|min:20',
+        ], [
+            'motivoCancelacion.required' => 'Debe indicar el motivo de cancelación',
+            'motivoCancelacion.min' => 'El motivo debe tener al menos 20 caracteres',
+        ]);
+
+        if ($this->actividad->solicitarCancelacion($this->motivoCancelacion, auth()->id())) {
+            $this->showCancelacionModal = false;
+            $this->motivoCancelacion = '';
+            session()->flash('success', 'Solicitud de cancelación enviada. Esperando aprobación del coordinador FAO.');
+            $this->actividad->refresh();
+        } else {
+            session()->flash('error', 'No se puede solicitar la cancelación de esta actividad.');
+        }
+    }
+
+    public function cerrarModalCancelacion(): void
+    {
+        $this->showCancelacionModal = false;
+        $this->motivoCancelacion = '';
+    }
+
+    // ========== MÉTODOS DE REVISIONES ==========
+
+    public function abrirModalRevision($seguimientoId): void
+    {
+        $this->seguimientoParaRevisar = SeguimientoActividad::find($seguimientoId);
+        $this->tipoRevision = 'observacion';
+        $this->comentarioRevision = '';
+        $this->showModalRevision = true;
+    }
+
+    public function cerrarModalRevision(): void
+    {
+        $this->showModalRevision = false;
+        $this->seguimientoParaRevisar = null;
+        $this->tipoRevision = 'observacion';
+        $this->comentarioRevision = '';
+    }
+
+    public function guardarRevision(): void
+    {
+        $this->validate([
+            'tipoRevision' => 'required|in:observacion,solicitud,correccion,aprobacion,rechazo',
+            'comentarioRevision' => 'required|string|min:5',
+        ], [
+            'comentarioRevision.required' => 'Debe ingresar un comentario',
+            'comentarioRevision.min' => 'El comentario debe tener al menos 5 caracteres',
+        ]);
+
+        \App\Models\RevisionSeguimiento::create([
+            'seguimiento_actividad_id' => $this->seguimientoParaRevisar->id,
+            'user_id' => auth()->id(),
+            'tipo' => $this->tipoRevision,
+            'comentario' => $this->comentarioRevision,
+            'estado' => in_array($this->tipoRevision, ['aprobacion', 'rechazo']) ? 'cerrado' : 'pendiente',
+        ]);
+
+        $this->cerrarModalRevision();
+        $this->seguimientos = $this->actividad->seguimientos()->with(['registradoPor', 'revisiones.revisor'])->get();
+
+        session()->flash('success', 'Revisión agregada correctamente');
+    }
+
+    public function abrirModalRespuesta($revisionId): void
+    {
+        $this->revisionParaResponder = \App\Models\RevisionSeguimiento::find($revisionId);
+        $this->respuestaRevision = '';
+        $this->showModalRespuesta = true;
+    }
+
+    public function cerrarModalRespuesta(): void
+    {
+        $this->showModalRespuesta = false;
+        $this->revisionParaResponder = null;
+        $this->respuestaRevision = '';
+    }
+
+    public function guardarRespuesta(): void
+    {
+        $this->validate([
+            'respuestaRevision' => 'required|string|min:5',
+        ], [
+            'respuestaRevision.required' => 'Debe ingresar una respuesta',
+            'respuestaRevision.min' => 'La respuesta debe tener al menos 5 caracteres',
+        ]);
+
+        $this->revisionParaResponder->marcarAtendido($this->respuestaRevision, auth()->id());
+
+        $this->cerrarModalRespuesta();
+        $this->seguimientos = $this->actividad->seguimientos()->with(['registradoPor', 'revisiones.revisor'])->get();
+
+        session()->flash('success', 'Respuesta enviada correctamente');
+    }
+
+    public function cerrarRevision($revisionId): void
+    {
+        $revision = \App\Models\RevisionSeguimiento::find($revisionId);
+        $revision->cerrar();
+
+        $this->seguimientos = $this->actividad->seguimientos()->with(['registradoPor', 'revisiones.revisor'])->get();
+        session()->flash('success', 'Revisión cerrada');
+    }
 }; ?>
 
 <div
@@ -243,6 +368,47 @@ new class extends Component {
                 </li>
             </ol>
         </nav>
+
+        {{-- Alertas de Cancelación --}}
+        @if($actividad->estado === 'pendiente_cancelacion')
+            <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl p-4 mb-6">
+                <div class="flex items-start gap-3">
+                    <svg class="w-6 h-6 text-yellow-600 dark:text-yellow-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <div class="flex-1">
+                        <h4 class="font-semibold text-yellow-800 dark:text-yellow-200">Cancelación Pendiente de Aprobación</h4>
+                        <p class="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
+                            <strong>Motivo:</strong> {{ $actividad->motivo_cancelacion }}
+                        </p>
+                        <p class="text-xs text-yellow-600 dark:text-yellow-400 mt-2">
+                            Solicitado por {{ $actividad->solicitante->name ?? 'Usuario' }}
+                            el {{ $actividad->fecha_solicitud_cancelacion?->format('d/m/Y H:i') }}
+                        </p>
+                    </div>
+                </div>
+            </div>
+        @endif
+
+        @if($actividad->estado_cancelacion === 'rechazada' && $actividad->respuesta_cancelacion)
+            <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 mb-6">
+                <div class="flex items-start gap-3">
+                    <svg class="w-6 h-6 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <div class="flex-1">
+                        <h4 class="font-semibold text-red-800 dark:text-red-200">Cancelación Rechazada</h4>
+                        <p class="text-sm text-red-700 dark:text-red-300 mt-1">
+                            <strong>Motivo del rechazo:</strong> {{ $actividad->respuesta_cancelacion }}
+                        </p>
+                        <p class="text-xs text-red-600 dark:text-red-400 mt-2">
+                            Rechazado por {{ $actividad->aprobador->name ?? 'Coordinador' }}
+                            el {{ $actividad->fecha_respuesta_cancelacion?->format('d/m/Y H:i') }}
+                        </p>
+                    </div>
+                </div>
+            </div>
+        @endif
 
         {{-- Panel Principal --}}
 
@@ -601,22 +767,35 @@ new class extends Component {
 
                 {{-- Botones de Acción --}}
                 <div class="px-8 py-6 bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900 rounded-b-xl border-2 border-t-0 border-slate-200 dark:border-slate-700 flex justify-between items-center shadow-sm">
-                    <button type="button" wire:click="volver"
-                            class="inline-flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-blue-600 to-blue-700 dark:from-blue-700 dark:to-blue-800 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all border-2 border-blue-500 dark:border-blue-600 shadow-sm font-semibold">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
-                        </svg>
-                        Cancelar
-                    </button>
-                    <button type="submit"
-                            class="inline-flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all shadow-lg font-semibold">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M5 13l4 4L19 7"></path>
-                        </svg>
-                        Guardar Seguimiento
-                    </button>
+                    <div class="flex items-center gap-3">
+                        <button type="button" wire:click="volver"
+                                class="inline-flex items-center gap-2 px-6 py-3 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-all border border-gray-300 dark:border-gray-600 font-medium">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                            </svg>
+                            Volver
+                        </button>
+
+                        @if(!in_array($actividad->estado, ['cancelado', 'pendiente_cancelacion', 'finalizado']))
+                            <button type="button" wire:click="abrirModalCancelacion"
+                                    class="inline-flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-all font-medium">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                </svg>
+                                Solicitar Cancelación
+                            </button>
+                        @endif
+                    </div>
+
+                    @if(!in_array($actividad->estado, ['cancelado', 'pendiente_cancelacion']))
+                        <button type="submit"
+                                class="inline-flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 transition-all shadow-lg font-semibold">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                            </svg>
+                            Guardar Seguimiento
+                        </button>
+                    @endif
                 </div>
             </form>
         </div>
@@ -732,6 +911,13 @@ new class extends Component {
                                             @endif
                                         </div>
                                     @endif
+
+                                    {{-- SECCIÓN DE REVISIONES --}}
+                                    <x-revisiones-seguimiento
+                                        :seguimiento="$seg"
+                                        :puedeRevisar="auth()->user()->hasRole('Administrador') || auth()->user()->hasRole('Coordinador')"
+                                        :puedeResponder="!auth()->user()->hasRole('Administrador') && !auth()->user()->hasRole('Coordinador')"
+                                    />
                                 </div>
                             </div>
                         @endforeach
@@ -741,7 +927,145 @@ new class extends Component {
         @endif
 
     </div>
+    {{-- Modal Solicitar Cancelación --}}
+    <flux:modal wire:model="showCancelacionModal" class="max-w-lg">
+        <div class="p-6">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center">
+                    <svg class="w-6 h-6 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h3 class="text-lg font-bold text-gray-900 dark:text-white">Solicitar Cancelación</h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">{{ $actividad->nombre }}</p>
+                </div>
+            </div>
 
-</div>
-</div>
+            <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4 mb-6">
+                <p class="text-sm text-yellow-800 dark:text-yellow-200">
+                    <strong>⚠️ Importante:</strong> Esta solicitud será enviada al coordinador FAO para su aprobación.
+                    Debe proporcionar una justificación clara del motivo por el cual no se puede completar esta actividad.
+                </p>
+            </div>
+
+            <form wire:submit="solicitarCancelacion">
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Motivo de Cancelación <span class="text-red-500">*</span>
+                    </label>
+                    <textarea wire:model="motivoCancelacion"
+                              rows="5"
+                              class="w-full rounded-lg border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white focus:ring-red-500 focus:border-red-500"
+                              placeholder="Explique detalladamente por qué no se puede completar esta actividad..."></textarea>
+                    @error('motivoCancelacion')
+                    <p class="mt-1 text-sm text-red-600 dark:text-red-400">{{ $message }}</p>
+                    @enderror
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Mínimo 20 caracteres</p>
+                </div>
+
+                <div class="flex justify-end gap-3">
+                    <button type="button"
+                            wire:click="cerrarModalCancelacion"
+                            class="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">
+                        Cancelar
+                    </button>
+                    <button type="submit"
+                            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors">
+                        Enviar Solicitud
+                    </button>
+                </div>
+            </form>
+        </div>
+    </flux:modal>
+
+    {{-- Modal Agregar Revisión --}}
+    @if($showModalRevision && $seguimientoParaRevisar)
+        <div class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
+                <div class="px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+                    <h3 class="text-lg font-bold">Agregar Revisión</h3>
+                    <p class="text-sm text-blue-100">Seguimiento del {{ $seguimientoParaRevisar->fecha_registro->format('d/m/Y') }}</p>
+                </div>
+
+                <form wire:submit="guardarRevision" class="p-6 space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Tipo de Revisión</label>
+                        <select wire:model="tipoRevision" class="w-full rounded-lg border-gray-300 dark:border-zinc-600 dark:bg-zinc-700 dark:text-white">
+                            <option value="observacion">💬 Observación</option>
+                            <option value="solicitud">📋 Solicitud de información</option>
+                            <option value="correccion">✏️ Solicitud de corrección</option>
+                            <option value="aprobacion">✅ Aprobación</option>
+                            <option value="rechazo">❌ Rechazo</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Comentario</label>
+                        <textarea
+                            wire:model="comentarioRevision"
+                            rows="4"
+                            class="w-full rounded-lg border-gray-300 dark:border-zinc-600 dark:bg-zinc-700 dark:text-white"
+                            placeholder="Escriba su comentario o instrucción..."
+                        ></textarea>
+                        @error('comentarioRevision')
+                        <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                        @enderror
+                    </div>
+
+                    <div class="flex gap-3 justify-end pt-4 border-t border-gray-200 dark:border-zinc-700">
+                        <button type="button" wire:click="cerrarModalRevision" class="px-4 py-2 bg-gray-200 dark:bg-zinc-600 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-zinc-500 transition">
+                            Cancelar
+                        </button>
+                        <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition">
+                            Guardar Revisión
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    @endif
+
+    {{-- Modal Responder Revisión --}}
+    @if($showModalRespuesta && $revisionParaResponder)
+        <div class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
+                <div class="px-6 py-4 bg-gradient-to-r from-green-600 to-green-700 text-white">
+                    <h3 class="text-lg font-bold">Responder Revisión</h3>
+                    <p class="text-sm text-green-100">{{ $revisionParaResponder->tipo_texto }}</p>
+                </div>
+
+                <div class="p-6">
+                    <div class="bg-gray-50 dark:bg-zinc-700 rounded-lg p-4 mb-4">
+                        <p class="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">Comentario de FAO:</p>
+                        <p class="text-sm text-gray-700 dark:text-gray-300">{{ $revisionParaResponder->comentario }}</p>
+                    </div>
+
+                    <form wire:submit="guardarRespuesta" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Su Respuesta</label>
+                            <textarea
+                                wire:model="respuestaRevision"
+                                rows="4"
+                                class="w-full rounded-lg border-gray-300 dark:border-zinc-600 dark:bg-zinc-700 dark:text-white"
+                                placeholder="Escriba su respuesta..."
+                            ></textarea>
+                            @error('respuestaRevision')
+                            <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                            @enderror
+                        </div>
+
+                        <div class="flex gap-3 justify-end pt-4 border-t border-gray-200 dark:border-zinc-700">
+                            <button type="button" wire:click="cerrarModalRespuesta" class="px-4 py-2 bg-gray-200 dark:bg-zinc-600 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-zinc-500 transition">
+                                Cancelar
+                            </button>
+                            <button type="submit" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition">
+                                Enviar Respuesta
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    @endif
 </div>

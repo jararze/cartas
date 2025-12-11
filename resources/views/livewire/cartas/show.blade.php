@@ -63,6 +63,11 @@ new class extends Component {
     public $etiquetas = [];
     public $observaciones = '';
     public $justificacion_sobregiro = '';
+
+    public $showCancelacionModal = false;
+    public $actividadParaCancelar = null;
+    public $motivoCancelacion = '';
+
     public $archivos = [];
     public $imagenes = [];
 
@@ -783,6 +788,59 @@ new class extends Component {
         $this->tipoAdvertencia = null;
         $this->advertenciasMontos = [];
         $this->advertenciasFechas = [];
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+// MÉTODOS PARA CANCELACIÓN DE ACTIVIDADES
+// ═══════════════════════════════════════════════════════════════════
+
+    public function abrirModalCancelacion($actividadId): void
+    {
+        $this->actividadParaCancelar = Actividad::find($actividadId);
+        $this->motivoCancelacion = '';
+        $this->showCancelacionModal = true;
+    }
+
+    public function cerrarModalCancelacion(): void
+    {
+        $this->showCancelacionModal = false;
+        $this->actividadParaCancelar = null;
+        $this->motivoCancelacion = '';
+    }
+
+    public function solicitarCancelacion(): void
+    {
+        $this->validate([
+            'motivoCancelacion' => 'required|string|min:20',
+        ], [
+            'motivoCancelacion.required' => 'Debe indicar el motivo de la cancelación',
+            'motivoCancelacion.min' => 'El motivo debe tener al menos 20 caracteres',
+        ]);
+
+        if (!$this->actividadParaCancelar) {
+            session()->flash('error', '❌ No se encontró la actividad');
+            return;
+        }
+
+        // Verificar que la actividad puede ser cancelada
+        if (in_array($this->actividadParaCancelar->estado, ['cancelado', 'pendiente_cancelacion', 'finalizado'])) {
+            session()->flash('error', '❌ Esta actividad no puede ser cancelada en su estado actual');
+            $this->cerrarModalCancelacion();
+            return;
+        }
+
+        // Solicitar cancelación
+        $this->actividadParaCancelar->solicitarCancelacion($this->motivoCancelacion, auth()->id());
+
+        $this->cerrarModalCancelacion();
+        $this->carta->refresh();
+
+        session()->flash('message', '⏳ Solicitud de cancelación enviada. Pendiente de aprobación del coordinador.');
+    }
+
+    public function puedeSerCancelada($actividad): bool
+    {
+        return !in_array($actividad->estado, ['cancelado', 'pendiente_cancelacion', 'finalizado']);
     }
 }; ?>
 
@@ -1730,23 +1788,90 @@ new class extends Component {
                                                 'finalizado' => 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
                                                 'en_curso' => 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
                                                 'atrasado' => 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400',
+                                                'pendiente_cancelacion' => 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400',
+                                                'cancelado' => 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400 line-through',
                                                 default => 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
                                             };
+                                            $esCancelada = $actividad->estado === 'cancelado';
+                                            $esPendienteCancelacion = $actividad->estado === 'pendiente_cancelacion';
+                                            $cancelacionRechazada = $actividad->estado_cancelacion === 'rechazada';
                                         @endphp
 
-                                        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-lg transition-shadow">
+                                        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4 hover:shadow-lg transition-shadow {{ $esCancelada ? 'opacity-60' : '' }}">
+
+                                            {{-- ✅ ALERTA: Pendiente de Cancelación --}}
+                                            @if($esPendienteCancelacion)
+                                                <div class="mb-3 bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-900/20 dark:to-amber-900/20 border border-yellow-300 dark:border-yellow-700 rounded-lg p-3">
+                                                    <div class="flex items-start gap-2">
+                                                        <svg class="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5 animate-pulse" fill="currentColor" viewBox="0 0 20 20">
+                                                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                                                        </svg>
+                                                        <div class="flex-1 min-w-0">
+                                                            <p class="text-xs font-bold text-yellow-800 dark:text-yellow-200">
+                                                                ⏳ Cancelación Pendiente
+                                                            </p>
+                                                            <p class="text-xs text-yellow-700 dark:text-yellow-300 mt-1 line-clamp-2">
+                                                                {{ $actividad->motivo_cancelacion }}
+                                                            </p>
+                                                            <p class="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+                                                                Solicitado: {{ $actividad->fecha_solicitud_cancelacion?->format('d/m/Y H:i') }}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            @endif
+
+                                            {{-- ✅ ALERTA: Cancelación Rechazada --}}
+                                            @if($cancelacionRechazada)
+                                                <div class="mb-3 bg-gradient-to-r from-red-50 to-rose-50 dark:from-red-900/20 dark:to-rose-900/20 border border-red-300 dark:border-red-700 rounded-lg p-3">
+                                                    <div class="flex items-start gap-2">
+                                                        <svg class="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                                                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+                                                        </svg>
+                                                        <div class="flex-1 min-w-0">
+                                                            <p class="text-xs font-bold text-red-800 dark:text-red-200">
+                                                                ❌ Cancelación Rechazada
+                                                            </p>
+                                                            <p class="text-xs text-red-700 dark:text-red-300 mt-1 line-clamp-2">
+                                                                {{ $actividad->respuesta_cancelacion }}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            @endif
+
+                                            {{-- ✅ ALERTA: Actividad Cancelada --}}
+                                            @if($esCancelada)
+                                                <div class="mb-3 bg-gray-100 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg p-3">
+                                                    <div class="flex items-center gap-2">
+                                                        <svg class="w-5 h-5 text-gray-500 dark:text-gray-400" fill="currentColor" viewBox="0 0 20 20">
+                                                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+                                                        </svg>
+                                                        <p class="text-xs font-bold text-gray-600 dark:text-gray-300">
+                                                            🚫 Actividad Cancelada
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            @endif
+
                                             <!-- Header -->
                                             <div class="flex items-start justify-between mb-3">
                                                 <div class="flex-1 min-w-0">
-                                                    <div class="flex items-center gap-2 mb-2">
-                                                <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
-                                                    #{{ $actividad->id }}
-                                                </span>
+                                                    <div class="flex items-center gap-2 mb-2 flex-wrap">
+                    <span class="text-xs font-semibold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
+                        #{{ $actividad->id }}
+                    </span>
                                                         <span class="px-2 py-0.5 rounded-full text-xs font-medium {{ $estadoClass }}">
-                                                    {{ ucfirst($actividad->estado) }}
-                                                </span>
+                        @if($esPendienteCancelacion)
+                                                                ⏳ Pend. Cancelación
+                                                            @elseif($esCancelada)
+                                                                🚫 Cancelada
+                                                            @else
+                                                                {{ ucfirst(str_replace('_', ' ', $actividad->estado)) }}
+                                                            @endif
+                    </span>
                                                     </div>
-                                                    <h5 class="font-semibold text-gray-900 dark:text-white text-sm line-clamp-2 mb-2">
+                                                    <h5 class="font-semibold text-gray-900 dark:text-white text-sm line-clamp-2 mb-2 {{ $esCancelada ? 'line-through text-gray-500' : '' }}">
                                                         {{ $actividad->nombre }}
                                                     </h5>
                                                     <p class="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mb-3">
@@ -1759,11 +1884,15 @@ new class extends Component {
                                             <div class="grid grid-cols-2 gap-2 mb-3">
                                                 <div class="bg-blue-50 dark:bg-blue-900/20 rounded p-2">
                                                     <p class="text-xs text-gray-600 dark:text-gray-400">Presupuesto</p>
-                                                    <p class="text-sm font-bold text-gray-900 dark:text-white">${{ number_format($actividad->monto, 0) }}</p>
+                                                    <p class="text-sm font-bold text-gray-900 dark:text-white {{ $esCancelada ? 'line-through' : '' }}">
+                                                        ${{ number_format($actividad->monto, 0) }}
+                                                    </p>
                                                 </div>
                                                 <div class="bg-green-50 dark:bg-green-900/20 rounded p-2">
                                                     <p class="text-xs text-gray-600 dark:text-gray-400">Ejecutado</p>
-                                                    <p class="text-sm font-bold text-green-600 dark:text-green-400">${{ number_format($actividad->gasto_acumulado, 0) }}</p>
+                                                    <p class="text-sm font-bold text-green-600 dark:text-green-400">
+                                                        ${{ number_format($actividad->gasto_acumulado, 0) }}
+                                                    </p>
                                                 </div>
                                             </div>
 
@@ -1774,11 +1903,11 @@ new class extends Component {
                                                     <span class="font-bold text-purple-600 dark:text-purple-400">{{ $actividad->progreso }}%</span>
                                                 </div>
                                                 <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                                                    <div class="bg-purple-600 h-2 rounded-full" style="width: {{ $actividad->progreso }}%"></div>
+                                                    <div class="{{ $esCancelada ? 'bg-gray-400' : 'bg-purple-600' }} h-2 rounded-full" style="width: {{ $actividad->progreso }}%"></div>
                                                 </div>
                                             </div>
 
-                                            @if($saldoActividad < 0)
+                                            @if($saldoActividad < 0 && !$esCancelada)
                                                 <div class="mb-3 bg-red-50 dark:bg-red-900/20 border-l-2 border-red-500 p-2 rounded">
                                                     <p class="text-xs font-semibold text-red-800 dark:text-red-300">
                                                         ⚠️ Excedido ${{ number_format(abs($saldoActividad), 0) }}
@@ -1787,16 +1916,41 @@ new class extends Component {
                                             @endif
 
                                             <!-- Botones -->
-                                            <div class="flex gap-2">
-                                                <a href="{{ route('actividades.seguimiento', $actividad->id) }}"
-                                                   class="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors text-center">
-                                                    📊 Seguimiento
-                                                </a>
-                                                <a href="{{ route('actividades.historial', $actividad->id) }}"
-                                                   wire:navigate
-                                                   class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs font-medium text-center transition-colors">
-                                                    📜 Historial
-                                                </a>
+                                            <div class="space-y-2">
+                                                {{-- Fila 1: Seguimiento e Historial --}}
+                                                @if(!$esCancelada && !$esPendienteCancelacion)
+                                                    <div class="flex gap-2">
+                                                        <a href="{{ route('actividades.seguimiento', $actividad->id) }}"
+                                                           class="flex-1 bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg text-xs font-medium transition-colors text-center">
+                                                            📊 Seguimiento
+                                                        </a>
+                                                        <a href="{{ route('actividades.historial', $actividad->id) }}"
+                                                           wire:navigate
+                                                           class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-xs font-medium text-center transition-colors">
+                                                            📜 Historial
+                                                        </a>
+                                                    </div>
+                                                @elseif($esCancelada || $esPendienteCancelacion)
+                                                    <div class="flex gap-2">
+                                                        <a href="{{ route('actividades.historial', $actividad->id) }}"
+                                                           wire:navigate
+                                                           class="flex-1 bg-gray-500 hover:bg-gray-600 text-white px-3 py-2 rounded-lg text-xs font-medium text-center transition-colors">
+                                                            📜 Ver Historial
+                                                        </a>
+                                                    </div>
+                                                @endif
+
+                                                {{-- Fila 2: Botón de Cancelación --}}
+                                                @if($this->puedeSerCancelada($actividad))
+                                                    <button
+                                                        wire:click="abrirModalCancelacion({{ $actividad->id }})"
+                                                        class="w-full bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800 px-3 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-2">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                                                        </svg>
+                                                        Solicitar Cancelación
+                                                    </button>
+                                                @endif
                                             </div>
                                         </div>
                                     @endforeach
@@ -2728,6 +2882,142 @@ new class extends Component {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                         Continuar de Todas Formas
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {{-- ═══════════════════════════════════════════════════════════════════ --}}
+    {{-- MODAL: SOLICITAR CANCELACIÓN DE ACTIVIDAD --}}
+    {{-- ═══════════════════════════════════════════════════════════════════ --}}
+    <div x-data="{ show: @entangle('showCancelacionModal') }"
+         x-show="show"
+         x-cloak
+         class="fixed inset-0 bg-black bg-opacity-50 z-[70] flex items-center justify-center p-4"
+         @click.self="$wire.cerrarModalCancelacion()">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-lg w-full" @click.stop>
+
+            {{-- Header --}}
+            <div class="p-6 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-red-50 to-orange-50 dark:from-red-900/20 dark:to-orange-900/20 rounded-t-xl">
+                <div class="flex items-start gap-4">
+                    <div class="flex-shrink-0">
+                        <div class="w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center">
+                            <svg class="w-6 h-6 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="flex-1">
+                        <h2 class="text-xl font-bold text-gray-900 dark:text-white">
+                            Solicitar Cancelación
+                        </h2>
+                        @if($actividadParaCancelar)
+                            <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                                {{ $actividadParaCancelar->nombre }}
+                            </p>
+                        @endif
+                    </div>
+                    <button wire:click="cerrarModalCancelacion"
+                            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            {{-- Contenido --}}
+            <div class="p-6 space-y-4">
+
+                {{-- Advertencia --}}
+                <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-4">
+                    <div class="flex items-start gap-3">
+                        <svg class="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                        </svg>
+                        <div class="flex-1">
+                            <h4 class="text-sm font-semibold text-yellow-800 dark:text-yellow-200">
+                                ⚠️ Importante
+                            </h4>
+                            <p class="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
+                                Esta solicitud será enviada al <strong>Coordinador</strong> para su aprobación.
+                                La actividad quedará en estado "Pendiente de Cancelación" hasta que sea revisada.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {{-- Información de la actividad --}}
+                @if($actividadParaCancelar)
+                    <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4">
+                        <div class="grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <p class="text-gray-600 dark:text-gray-400">Presupuesto</p>
+                                <p class="font-bold text-gray-900 dark:text-white">
+                                    ${{ number_format($actividadParaCancelar->monto, 2) }}
+                                </p>
+                            </div>
+                            <div>
+                                <p class="text-gray-600 dark:text-gray-400">Ejecutado</p>
+                                <p class="font-bold text-green-600 dark:text-green-400">
+                                    ${{ number_format($actividadParaCancelar->gasto_acumulado, 2) }}
+                                </p>
+                            </div>
+                            <div>
+                                <p class="text-gray-600 dark:text-gray-400">Progreso</p>
+                                <p class="font-bold text-purple-600 dark:text-purple-400">
+                                    {{ $actividadParaCancelar->progreso }}%
+                                </p>
+                            </div>
+                            <div>
+                                <p class="text-gray-600 dark:text-gray-400">Estado Actual</p>
+                                <p class="font-bold text-gray-900 dark:text-white">
+                                    {{ ucfirst(str_replace('_', ' ', $actividadParaCancelar->estado)) }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                @endif
+
+                {{-- Formulario --}}
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                        Motivo de la Cancelación <span class="text-red-500">*</span>
+                    </label>
+                    <textarea
+                        wire:model="motivoCancelacion"
+                        rows="4"
+                        class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 resize-none"
+                        placeholder="Explique detalladamente por qué solicita cancelar esta actividad..."
+                    ></textarea>
+                    @error('motivoCancelacion')
+                    <p class="text-red-500 text-xs mt-1">{{ $message }}</p>
+                    @enderror
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        Mínimo 20 caracteres. Sea específico para facilitar la revisión.
+                    </p>
+                </div>
+
+            </div>
+
+            {{-- Footer --}}
+            <div class="px-6 py-4 bg-gray-50 dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 rounded-b-xl">
+                <div class="flex gap-3">
+                    <button
+                        wire:click="cerrarModalCancelacion"
+                        type="button"
+                        class="flex-1 px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                        Cancelar
+                    </button>
+                    <button
+                        wire:click="solicitarCancelacion"
+                        type="button"
+                        class="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold transition-colors flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                        </svg>
+                        Enviar Solicitud
                     </button>
                 </div>
             </div>

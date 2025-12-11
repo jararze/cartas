@@ -21,6 +21,7 @@ class KpiValor extends Model
         'datos_calculo' => 'array',
         'en_alerta' => 'boolean',
         'fecha_calculo' => 'datetime',
+        'evidencia_path' => 'string',  // NUEVO
     ];
 
     // Relaciones
@@ -60,7 +61,7 @@ class KpiValor extends Model
     {
         $esMejoraMejorando = $this->kpi->tipo_umbral === 'mayor_mejor' && $this->tendencia === 'subiendo';
         $esMejoraBajando = $this->kpi->tipo_umbral === 'menor_mejor' && $this->tendencia === 'bajando';
-        
+
         if ($esMejoraMejorando || $esMejoraBajando) {
             return 'text-green-600';
         } elseif ($this->tendencia === 'estable') {
@@ -68,5 +69,28 @@ class KpiValor extends Model
         } else {
             return 'text-red-600';
         }
+    }
+
+    // Formato del cambio para mostrar (+5.2%, -3.1%, etc.)
+    public function getCambioFormateadoAttribute(): string
+    {
+        if ($this->porcentaje_cambio === null) {
+            return '-';
+        }
+
+        $signo = $this->porcentaje_cambio >= 0 ? '+' : '';
+        return $signo . number_format($this->porcentaje_cambio, 1) . '%';
+    }
+
+// Fecha formateada para mostrar
+    public function getFechaFormateadaAttribute(): string
+    {
+        return $this->fecha_calculo?->format('d/m/Y') ?? '-';
+    }
+
+// Nombre del responsable
+    public function getResponsableNombreAttribute(): string
+    {
+        return $this->calculadoPor?->name ?? 'Sistema';
     }
 }

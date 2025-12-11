@@ -24,12 +24,24 @@ class Actividad extends Model
         'fecha_fin' => 'date',
         'fecha_inicio_real' => 'date',
         'fecha_fin_real' => 'date',
+        'fecha_solicitud_cancelacion' => 'datetime',
+        'fecha_respuesta_cancelacion' => 'datetime',
     ];
 
     // Relaciones
     public function producto(): BelongsTo
     {
         return $this->belongsTo(Producto::class);
+    }
+
+    public function solicitante(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'solicitado_por');
+    }
+
+    public function aprobador(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'aprobado_por');
     }
 
     public function responsable(): BelongsTo
@@ -47,7 +59,7 @@ class Actividad extends Model
      */
     public function ultimoSeguimiento()
     {
-        return $this->hasOne(Seguimiento::class)->latestOfMany('fecha_registro');
+        return $this->hasOne(SeguimientoActividad::class)->latestOfMany('fecha_registro');
     }
 
     /**
@@ -181,5 +193,80 @@ class Actividad extends Model
             'registrado_por' => $usuario->id,
             'fecha_registro' => now(),
         ]);
+    }
+
+    public function solicitarCancelacion(string $motivo, int $userId): bool
+    {
+        if ($this->estado === 'cancelado' || $this->estado === 'pendiente_cancelacion') {
+            return false;
+        }
+
+        $this->update([
+            'estado_anterior_cancelacion' => $this->estado,
+            'estado' => 'pendiente_cancelacion',
+            'motivo_cancelacion' => $motivo,
+            'fecha_solicitud_cancelacion' => now(),
+            'solicitado_por' => $userId,
+            'estado_cancelacion' => 'pendiente',
+        ]);
+
+        return true;
+    }
+
+    public function aprobarCancelacion(int $userId, ?string $respuesta = null): bool
+    {
+        if ($this->estado !== 'pendiente_cancelacion') {
+            return false;
+        }
+
+        $this->update([
+            'estado' => 'cancelado',
+            'estado_cancelacion' => 'aprobada',
+            'respuesta_cancelacion' => $respuesta,
+            'aprobado_por' => $userId,
+            'fecha_respuesta_cancelacion' => now(),
+        ]);
+
+        // Verificar si el producto debe actualizarse
+        $this->producto->verificarYActualizarEstado();
+
+        return true;
+    }
+
+    public function rechazarCancelacion(int $userId, string $respuesta): bool
+    {
+        if ($this->estado !== 'pendiente_cancelacion') {
+            return false;
+        }
+
+        $this->update([
+            'estado' => $this->estado_anterior_cancelacion,
+            'estado_cancelacion' => 'rechazada',
+            'respuesta_cancelacion' => $respuesta,
+            'aprobado_por' => $userId,
+            'fecha_respuesta_cancelacion' => now(),
+            'estado_anterior_cancelacion' => null,
+        ]);
+
+        return true;
+    }
+
+// Scopes útiles
+    public function scopePendientesCancelacion($query)
+    {
+        return $query->where('estado', 'pendiente_cancelacion');
+    }
+
+    public function scopeActivas($query)
+    {
+        return $query->whereNotIn('estado', ['cancelado', 'pendiente_cancelacion']);
+    }
+    public function scopePendientesCancelacionParaCoordinador($query, $userId)
+    {
+        return $query->where('estado', 'pendiente_cancelacion')
+            ->where('estado_cancelacion', 'pendiente')
+            ->whereHas('producto.carta', function($q) use ($userId) {
+                $q->where('creado_por', $userId);  // ← CORREGIDO
+            });
     }
 }

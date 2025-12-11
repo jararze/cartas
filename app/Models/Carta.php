@@ -52,15 +52,6 @@ class Carta extends Model
         return $this->hasMany(ColaboradorCarta::class);
     }
 
-    public function responsableFao(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'responsable_fao_id');
-    }
-
-    public function createdBy(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'created_by');
-    }
 
     // Métodos calculados
     public function getPresupuestoCalculadoAttribute(): float
@@ -100,7 +91,7 @@ class Carta extends Model
         return $query->with([
             'productos.actividades.seguimientos',
             'colaboradores',
-            'responsableFao'
+            'creador'
         ]);
     }
 

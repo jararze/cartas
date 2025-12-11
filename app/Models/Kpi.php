@@ -17,8 +17,12 @@ class Kpi extends Model
         'campos_calculo' => 'array',
         'umbral_min' => 'decimal:2',
         'umbral_max' => 'decimal:2',
+        'meta' => 'decimal:2',           // NUEVO
+        'linea_base' => 'decimal:2',     // NUEVO
         'activo' => 'boolean',
         'mostrar_en_dashboard' => 'boolean',
+        'proxima_medicion' => 'date',    // NUEVO,
+        'ultima_medicion' => 'date',        // ← Agregar
     ];
 
     // Relaciones
@@ -69,7 +73,7 @@ class Kpi extends Model
         $carta = $this->carta;
         $valorAnterior = $this->valores()->first()?->valor;
 
-        $valor = match($this->codigo) {
+        $valor = match ($this->codigo) {
             'ejecucion_presupuestal' => $this->calcularEjecucionPresupuestal($carta),
             'variacion_presupuestal' => $this->calcularVariacionPresupuestal($carta),
             'burn_rate' => $this->calcularBurnRate($carta),
@@ -135,7 +139,7 @@ class Kpi extends Model
     // KPIs Financieros
     private function calcularEjecucionPresupuestal($carta): float
     {
-        $gastoTotal = $carta->productos->sum(function($producto) {
+        $gastoTotal = $carta->productos->sum(function ($producto) {
             return $producto->actividades->sum('gasto_acumulado');
         });
 
@@ -147,7 +151,7 @@ class Kpi extends Model
     private function calcularVariacionPresupuestal($carta): float
     {
         $presupuestoTotal = $carta->monto_total;
-        $gastoTotal = $carta->productos->sum(function($producto) {
+        $gastoTotal = $carta->productos->sum(function ($producto) {
             return $producto->actividades->sum('gasto_acumulado');
         });
 
@@ -159,7 +163,7 @@ class Kpi extends Model
         $diasTranscurridos = now()->diffInDays($carta->fecha_inicio);
         if ($diasTranscurridos == 0) return 0;
 
-        $gastoTotal = $carta->productos->sum(function($producto) {
+        $gastoTotal = $carta->productos->sum(function ($producto) {
             return $producto->actividades->sum('gasto_acumulado');
         });
 
@@ -169,7 +173,7 @@ class Kpi extends Model
     private function calcularCPI($carta): float
     {
         $valorGanado = $this->calcularProgresoGeneral($carta) * $carta->monto_total / 100;
-        $gastoReal = $carta->productos->sum(function($producto) {
+        $gastoReal = $carta->productos->sum(function ($producto) {
             return $producto->actividades->sum('gasto_acumulado');
         });
 
@@ -236,7 +240,7 @@ class Kpi extends Model
     private function calcularActividadesEnRiesgo($carta): int
     {
         return $carta->productos->flatMap->actividades
-            ->filter(function($actividad) {
+            ->filter(function ($actividad) {
                 return $actividad->esta_atrasado || $actividad->excede_presupuesto;
             })->count();
     }
@@ -251,7 +255,7 @@ class Kpi extends Model
     private function calcularActividadesAtrasadas($carta): int
     {
         return $carta->productos->flatMap->actividades
-            ->filter(function($actividad) {
+            ->filter(function ($actividad) {
                 return $actividad->fecha_fin < now() && $actividad->progreso < 100;
             })
             ->count();
@@ -262,5 +266,122 @@ class Kpi extends Model
         // Lógica para KPIs personalizados basada en $this->formula y $this->campos_calculo
         // Por implementar según necesidades específicas
         return 0;
+    }
+
+    // Relación con Producto (opcional)
+    public function producto(): BelongsTo
+    {
+        return $this->belongsTo(Producto::class);
+    }
+
+// Relación con Actividad (opcional)
+    public function actividad(): BelongsTo
+    {
+        return $this->belongsTo(Actividad::class);
+    }
+
+    // Obtener días según frecuencia
+    public function getDiasFrecuencia(): ?int
+    {
+        return match($this->frecuencia) {
+            'diario' => 1,
+            'semanal' => 7,
+            'quincenal' => 15,
+            'mensual' => 30,
+            'trimestral' => 90,
+            'semestral' => 180,
+            'anual' => 365,
+            'unico' => null,
+            default => 30,
+        };
+    }
+
+// Calcular próxima medición después de registrar valor
+    public function actualizarProximaMedicion(): void
+    {
+        $dias = $this->getDiasFrecuencia();
+
+        if ($dias) {
+            $this->update([
+                'proxima_medicion' => now()->addDays($dias)
+            ]);
+        }
+    }
+
+// Verificar si requiere medición
+    public function getRequiereMedicionAttribute(): bool
+    {
+        if ($this->frecuencia === 'unico') {
+            return $this->valores()->count() === 0;
+        }
+
+        return $this->proxima_medicion && $this->proxima_medicion->isPast();
+    }
+
+// Días hasta próxima medición (negativo si vencido)
+    public function getDiasParaMedicionAttribute(): ?int
+    {
+        if (!$this->proxima_medicion) {
+            return null;
+        }
+
+        return now()->startOfDay()->diffInDays($this->proxima_medicion, false);
+    }
+
+// Porcentaje de avance hacia la meta
+    public function getPorcentajeMetaAttribute(): ?float
+    {
+        if (!$this->meta || $this->meta == 0) {
+            return null;
+        }
+
+        $valorActual = $this->ultimoValor?->valor ?? $this->linea_base ?? 0;
+        return round(($valorActual / $this->meta) * 100, 1);
+    }
+
+// Etiqueta de categoría formateada
+    public function getCategoriaNombreAttribute(): string
+    {
+        return match($this->categoria) {
+            'social' => 'Social',
+            'productivo' => 'Productivo',
+            'ambiental' => 'Ambiental',
+            'economico' => 'Económico',
+            'infraestructura' => 'Infraestructura',
+            'capacitacion' => 'Capacitación',
+            'calidad' => 'Calidad',
+            'otro' => 'Otro',
+            default => 'Sin categoría',
+        };
+    }
+
+// Etiqueta de frecuencia formateada
+    public function getFrecuenciaNombreAttribute(): string
+    {
+        return match($this->frecuencia) {
+            'unico' => 'Única vez',
+            'diario' => 'Diario',
+            'semanal' => 'Semanal',
+            'quincenal' => 'Quincenal',
+            'mensual' => 'Mensual',
+            'trimestral' => 'Trimestral',
+            'semestral' => 'Semestral',
+            'anual' => 'Anual',
+            default => 'No definida',
+        };
+    }
+
+// Nombre de asociación (Carta/Producto/Actividad)
+    public function getAsociadoAAttribute(): string
+    {
+        if ($this->actividad_id) {
+            return 'Actividad: ' . $this->actividad?->nombre;
+        }
+
+        if ($this->producto_id) {
+            return 'Producto: ' . $this->producto?->nombre;
+        }
+
+        return 'Carta general';
     }
 }

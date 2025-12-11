@@ -95,6 +95,32 @@
                 >
                     Actividades
                 </flux:navlist.item>
+
+                {{-- En el sidebar, item de Actividades o nuevo item --}}
+                @php
+                    $queryPendientes = \App\Models\Actividad::where('estado', 'pendiente_cancelacion')
+                        ->where('estado_cancelacion', 'pendiente');
+
+                    // Si NO es administrador, filtrar solo sus cartas
+                    if (!auth()->user()->hasRole('Administrador')) {
+                        $queryPendientes->whereHas('producto.carta', fn($q) => $q->where('creado_por', auth()->id()));
+                    }
+
+                    $cancelacionesPendientes = $queryPendientes->count();
+                @endphp
+
+                <a href="{{ route('actividades.cancelaciones-pendientes') }}"
+                   class="sidebar-item flex items-center gap-3 px-3 py-2.5 rounded-lg {{ request()->routeIs('actividades.cancelaciones-pendientes') ? 'active' : '' }}">
+                    <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                    <span class="text-sm text-gray-700">Cancelaciones</span>
+                    @if($cancelacionesPendientes > 0)
+                        <span class="ml-auto bg-yellow-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+            {{ $cancelacionesPendientes }}
+        </span>
+                    @endif
+                </a>
             </flux:navlist.group>
         @endif
 
@@ -143,6 +169,40 @@
 
             </flux:navlist.group>
         @endif
+        @if(auth()->user()->hasAnyRole(['Administrador', 'Finanzas']))
+            <flux:navlist.group heading="Finanzas" class="grid">
+                <flux:navlist.item
+                    icon="banknotes"
+                    href="/desembolsos"
+                    :current="request()->is('desembolsos*')"
+                    wire:navigate
+                >
+                    Desembolsos
+                    @php
+                        $desembolsosPendientes = \App\Models\Desembolso::where('estado', 'pendiente')->count();
+                    @endphp
+                    @if($desembolsosPendientes > 0)
+                        <flux:badge color="yellow" size="sm" class="ml-auto">{{ $desembolsosPendientes }}</flux:badge>
+                    @endif
+                </flux:navlist.item>
+
+                <flux:navlist.item
+                    icon="clipboard-document-check"
+                    href="/productos-aprobacion"
+                    :current="request()->is('productos-aprobacion*')"
+                    wire:navigate
+                >
+                    Aprobaciones
+                    @php
+                        $productosPendientes = \App\Models\Producto::where('estado', 'completado')->count();
+                    @endphp
+                    @if($productosPendientes > 0)
+                        <flux:badge color="orange" size="sm" class="ml-auto">{{ $productosPendientes }}</flux:badge>
+                    @endif
+                </flux:navlist.item>
+            </flux:navlist.group>
+        @endif
+
         @if(auth()->user()->hasRole(['Administrador', 'Coordinador']))
             <flux:navlist.group heading="Proveedores" class="grid">
                 <flux:navlist.item

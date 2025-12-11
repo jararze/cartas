@@ -23,7 +23,7 @@ class ReporteController extends Controller
         try {
             // Validar parámetros
             $validated = $request->validate([
-                'tipo' => 'required|in:resumen,financiero,avance,actividades,ejecutado_vs_planificado,plan_trabajo',
+                'tipo' => 'required|in:resumen,financiero,avance,actividades,ejecutado_vs_planificado,plan_trabajo,lineas_presupuestarias',
                 'formato' => 'required|in:pdf,excel',
                 'fecha_inicio' => 'nullable|date',
                 'fecha_fin' => 'nullable|date|after_or_equal:fecha_inicio',

@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use App\Models\RevisionSeguimiento;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class SeguimientoActividad extends Model
 {
@@ -132,5 +134,32 @@ class SeguimientoActividad extends Model
     public function scopePorUsuario($query, $userId)
     {
         return $query->where('registrado_por', $userId);
+    }
+
+    // ========== RELACIONES CON REVISIONES ==========
+
+    public function revisiones(): HasMany
+    {
+        return $this->hasMany(RevisionSeguimiento::class, 'seguimiento_actividad_id')->orderBy('created_at', 'desc');
+    }
+
+    public function revisionesPendientes(): HasMany
+    {
+        return $this->hasMany(RevisionSeguimiento::class, 'seguimiento_actividad_id')->where('estado', 'pendiente');
+    }
+
+    public function tieneRevisionesPendientes(): bool
+    {
+        return $this->revisiones()->where('estado', 'pendiente')->exists();
+    }
+
+    public function estaAprobado(): bool
+    {
+        return $this->revisiones()->where('tipo', 'aprobacion')->exists();
+    }
+
+    public function getContadorRevisionesPendientesAttribute(): int
+    {
+        return $this->revisiones()->where('estado', 'pendiente')->count();
     }
 }
