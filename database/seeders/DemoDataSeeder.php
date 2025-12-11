@@ -13,10 +13,10 @@ class DemoDataSeeder extends Seeder
         // ========================================
         // IMPORTANTE: Ajusta estos IDs según tu BD
         // ========================================
-        $adminId = 2;        // Usuario Administrador FAO
-        $coordinadorId = 2;  // Usuario Coordinador FAO
-        $proveedorUserId = 12; // Usuario Proveedor (si existe)
-        $proveedorId = 16;     // ID en tabla proveedors
+        $adminId = 11;        // Usuario Administrador FAO
+        $coordinadorId = 11;  // Usuario Coordinador FAO
+        $proveedorUserId = 9; // Usuario Proveedor (si existe)
+        $proveedorId = 3;     // ID en tabla proveedors
 
         $now = Carbon::now();
 
